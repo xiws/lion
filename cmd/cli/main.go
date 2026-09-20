@@ -184,8 +184,14 @@ func newCollectionsCmd() *cobra.Command {
 			fmt.Printf("接口 ID:  %s\n", api.ID)
 			fmt.Printf("方法:     %s\n", api.Method)
 			fmt.Printf("路径:     %s\n", api.Path)
-			if api.Script != "" {
-				fmt.Printf("脚本:     %s\n", api.Script)
+			if len(api.Scripts) > 0 {
+				for i, s := range api.Scripts {
+					if i == 0 {
+						fmt.Printf("脚本:     %s\n", s)
+					} else {
+						fmt.Printf("          %s\n", s)
+					}
+				}
 			}
 			if api.Description != "" {
 				fmt.Printf("描述:     %s\n", api.Description)
@@ -220,11 +226,13 @@ func newCollectionsCmd() *cobra.Command {
 // newSendCmd 发送请求命令
 func newSendCmd() *cobra.Command {
 	var (
-		env     string
-		addr    string
-		params  []string
-		output  string
-		verbose bool
+		env       string
+		addr      string
+		params    []string
+		output    string
+		verbose   bool
+		plaintext string
+		copy      bool
 	)
 
 	cmd := &cobra.Command{
@@ -261,9 +269,27 @@ func newSendCmd() *cobra.Command {
 			}
 
 			// 创建发送器（传入 Collection 的 Consul 服务名称）
-			s, err := sender.NewSender(cfg, env, addr, coll.Service)
+			s, err := sender.NewSender(cfg, env, addr, coll.Service, plaintext, verbose)
 			if err != nil {
 				return fmt.Errorf("创建发送器失败: %w", err)
+			}
+
+			// --copy 模式：生成等效命令，不发送请求
+			if copy {
+				if isGRPC(api) {
+					cmd, err := s.CopyGRPC(api, overrides)
+					if err != nil {
+						return err
+					}
+					fmt.Println(cmd)
+				} else {
+					cmd, err := s.CopyHTTP(api, overrides)
+					if err != nil {
+						return err
+					}
+					fmt.Println(cmd)
+				}
+				return nil
 			}
 
 			// 判断是 HTTP 还是 gRPC
@@ -278,7 +304,9 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().StringVar(&addr, "addr", "", "直连地址（覆盖配置中的 host）")
 	cmd.Flags().StringArrayVar(&params, "param", nil, "覆盖参数 (key=value)")
 	cmd.Flags().StringVar(&output, "output", "", "输出格式: pretty / json / raw")
-	cmd.Flags().BoolVar(&verbose, "verbose", false, "显示完整请求/响应报文")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "显示完整请求信息")
+	cmd.Flags().StringVar(&plaintext, "plaintext", "", "完整请求体 JSON（覆盖接口定义的请求体）")
+	cmd.Flags().BoolVar(&copy, "copy", false, "生成等效 curl/grpcurl 命令（不发送请求）")
 
 	return cmd
 }

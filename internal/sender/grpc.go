@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"lion/internal/model"
@@ -55,6 +56,24 @@ func (s *Sender) SendGRPC(api *model.API, params map[string]string, overrides ma
 		}
 	}
 
+	// --plaintext 覆盖完整请求体
+	if s.plaintext != "" {
+		if err := json.Unmarshal([]byte(s.plaintext), &body); err != nil {
+			return fmt.Errorf("解析 --plaintext 参数失败: %w", err)
+		}
+	}
+
+	if s.verbose {
+		fmt.Printf("── 请求 ──────────────────────────\n")
+		fmt.Printf("gRPC %s\n", api.Path)
+		fmt.Printf("Host: %s\n", host)
+		if body != nil {
+			data, _ := json.MarshalIndent(body, "", "  ")
+			fmt.Printf("Body:\n%s\n", string(data))
+		}
+		fmt.Printf("──────────────────────────────────\n\n")
+	}
+
 	// 构造脚本上下文
 	reqCtx := &model.ScriptContext{
 		APIID:   api.ID,
@@ -65,16 +84,20 @@ func (s *Sender) SendGRPC(api *model.API, params map[string]string, overrides ma
 		Body:    body,
 	}
 
-	// 执行前置脚本
-	preScript := script.ResolveScript(api, s.cfg.Hooks, true)
-	if preScript != "" {
-		result, err := s.engine.ExecutePreScript(preScript, "pre_request", reqCtx)
+	// 执行前置脚本（支持多脚本链式执行）
+	preScripts := script.ResolveScripts(api, s.cfg.Hooks, true)
+	if len(preScripts) > 0 {
+		result, err := s.engine.ExecutePreChain(preScripts, "pre_request", reqCtx)
 		if err != nil {
 			fmt.Printf("⚠️  前置脚本警告: %v\n", err)
-		} else {
-			applyPreResult(reqCtx, result)
+		} else if result != nil {
+			_ = result // 已通过 ExecutePreChain 应用到 reqCtx
 		}
 	}
+
+	// 添加 metadata（从脚本上下文中获取 headers）
+	md := metadata.New(reqCtx.Headers)
+	ctx = metadata.NewOutgoingContext(ctx, md)
 
 	// 通过反射调用 gRPC 方法
 	start := time.Now()
@@ -97,14 +120,16 @@ func (s *Sender) SendGRPC(api *model.API, params map[string]string, overrides ma
 		ElapsedMs:  elapsed,
 	}
 
-	// 执行后置脚本
-	postScript := script.ResolveScript(api, s.cfg.Hooks, false)
-	if postScript != "" {
-		result, err := s.engine.ExecutePostScript(postScript, "post_request", postCtx)
+	// 执行后置脚本（支持多脚本链式执行）
+	postScripts := script.ResolveScripts(api, s.cfg.Hooks, false)
+	if len(postScripts) > 0 {
+		results, err := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
 		if err != nil {
 			fmt.Printf("⚠️  后置脚本警告: %v\n", err)
 		} else {
-			printPostResult(result)
+			for _, result := range results {
+				printPostResult(result)
+			}
 		}
 	}
 
@@ -131,10 +156,6 @@ func invokeGRPC(ctx context.Context, conn *grpc.ClientConn, fullMethod string, b
 	if err := jsonToProto(body, inputMsg); err != nil {
 		return nil, fmt.Errorf("构造请求消息失败: %w", err)
 	}
-
-	// 添加 metadata
-	md := metadata.New(map[string]string{})
-	ctx = metadata.NewOutgoingContext(ctx, md)
 
 	// 构造输出消息
 	outputMsg := dynamicpb.NewMessage(outputDesc)
@@ -272,4 +293,46 @@ func printGRPCResponse(body interface{}, elapsed int64) {
 	} else {
 		fmt.Println(string(data))
 	}
+}
+
+// CopyGRPC 生成等效 grpcurl 命令
+func (s *Sender) CopyGRPC(api *model.API, overrides map[string]string) (string, error) {
+	host, err := s.resolveHost()
+	if err != nil {
+		return "", err
+	}
+
+	var body interface{}
+	if api.BodyJSON != "" {
+		if err := json.Unmarshal([]byte(api.BodyJSON), &body); err != nil {
+			return "", fmt.Errorf("解析请求体失败: %w", err)
+		}
+	}
+	if len(overrides) > 0 {
+		if bodyMap, ok := body.(map[string]interface{}); ok {
+			for k, v := range overrides {
+				bodyMap[k] = v
+			}
+		}
+	}
+	if s.plaintext != "" {
+		if err := json.Unmarshal([]byte(s.plaintext), &body); err != nil {
+			return "", fmt.Errorf("解析 --plaintext 参数失败: %w", err)
+		}
+	}
+
+	var cmd strings.Builder
+	cmd.WriteString("grpcurl -plaintext")
+	cmd.WriteString(fmt.Sprintf(" -d '%s'", mustMarshalJSON(body)))
+	cmd.WriteString(fmt.Sprintf(" %s %s", host, api.Path))
+
+	return cmd.String(), nil
+}
+
+func mustMarshalJSON(v interface{}) string {
+	if v == nil {
+		return "{}"
+	}
+	data, _ := json.Marshal(v)
+	return string(data)
 }

@@ -17,16 +17,18 @@ import (
 
 // Sender 请求发送器
 type Sender struct {
-	cfg     *model.GlobalConfig
-	env     *model.Environment
-	envName string
-	engine  *script.Engine
-	addr    string // 命令行 --addr 覆盖
-	service string // Consul 服务名称
+	cfg       *model.GlobalConfig
+	env       *model.Environment
+	envName   string
+	engine    *script.Engine
+	addr      string // 命令行 --addr 覆盖
+	service   string // Consul 服务名称
+	plaintext string // --plaintext 完整请求体
+	verbose   bool   // --verbose 显示完整请求信息
 }
 
 // NewSender 创建发送器
-func NewSender(cfg *model.GlobalConfig, envName, addr, service string) (*Sender, error) {
+func NewSender(cfg *model.GlobalConfig, envName, addr, service, plaintext string, verbose bool) (*Sender, error) {
 	name, env, err := config.GetEnvironment(cfg, envName)
 	if err != nil {
 		return nil, err
@@ -39,12 +41,14 @@ func NewSender(cfg *model.GlobalConfig, envName, addr, service string) (*Sender,
 	}
 
 	return &Sender{
-		cfg:     cfg,
-		env:     env,
-		envName: name,
-		engine:  script.NewEngineWithRunners(runners),
-		addr:    addr,
-		service: service,
+		cfg:       cfg,
+		env:       env,
+		envName:   name,
+		engine:    script.NewEngineWithRunners(runners),
+		addr:      addr,
+		service:   service,
+		plaintext: plaintext,
+		verbose:   verbose,
 	}, nil
 }
 
@@ -78,6 +82,27 @@ func (s *Sender) SendHTTP(api *model.API, params map[string]string, overrides ma
 		}
 	}
 
+	// --plaintext 覆盖完整请求体
+	if s.plaintext != "" {
+		if err := json.Unmarshal([]byte(s.plaintext), &body); err != nil {
+			return fmt.Errorf("解析 --plaintext 参数失败: %w", err)
+		}
+	}
+
+	if s.verbose {
+		fmt.Printf("── 请求 ──────────────────────────\n")
+		fmt.Printf("%s %s\n", api.Method, baseURL)
+		fmt.Printf("Headers:\n")
+		for k, v := range headers {
+			fmt.Printf("  %s: %s\n", k, v)
+		}
+		if body != nil {
+			data, _ := json.MarshalIndent(body, "", "  ")
+			fmt.Printf("Body:\n%s\n", string(data))
+		}
+		fmt.Printf("──────────────────────────────────\n\n")
+	}
+
 	// 构造脚本上下文
 	ctx := &model.ScriptContext{
 		APIID:   api.ID,
@@ -88,14 +113,14 @@ func (s *Sender) SendHTTP(api *model.API, params map[string]string, overrides ma
 		Body:    body,
 	}
 
-	// 执行前置脚本
-	preScript := script.ResolveScript(api, s.cfg.Hooks, true)
-	if preScript != "" {
-		result, err := s.engine.ExecutePreScript(preScript, "pre_request", ctx)
+	// 执行前置脚本（支持多脚本链式执行）
+	preScripts := script.ResolveScripts(api, s.cfg.Hooks, true)
+	if len(preScripts) > 0 {
+		result, err := s.engine.ExecutePreChain(preScripts, "pre_request", ctx)
 		if err != nil {
 			fmt.Printf("⚠️  前置脚本警告: %v\n", err)
-		} else {
-			applyPreResult(ctx, result)
+		} else if result != nil {
+			_ = result // 已通过 ExecutePreChain 应用到 ctx
 		}
 	}
 
@@ -160,14 +185,16 @@ func (s *Sender) SendHTTP(api *model.API, params map[string]string, overrides ma
 		postCtx.RespBody = string(respBody)
 	}
 
-	// 执行后置脚本
-	postScript := script.ResolveScript(api, s.cfg.Hooks, false)
-	if postScript != "" {
-		result, err := s.engine.ExecutePostScript(postScript, "post_request", postCtx)
+	// 执行后置脚本（支持多脚本链式执行）
+	postScripts := script.ResolveScripts(api, s.cfg.Hooks, false)
+	if len(postScripts) > 0 {
+		results, err := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
 		if err != nil {
 			fmt.Printf("⚠️  后置脚本警告: %v\n", err)
 		} else {
-			printPostResult(result)
+			for _, result := range results {
+				printPostResult(result)
+			}
 		}
 	}
 
@@ -218,19 +245,6 @@ func (s *Sender) resolveHost() (string, error) {
 	return "", fmt.Errorf("无法确定目标地址，请指定 --addr 或配置环境 host")
 }
 
-// applyPreResult 将前置脚本结果应用到上下文
-func applyPreResult(ctx *model.ScriptContext, result *model.ScriptResult) {
-	if result.Headers != nil {
-		ctx.Headers = result.Headers
-	}
-	if result.Params != nil {
-		ctx.Params = result.Params
-	}
-	if result.Body != nil {
-		ctx.Body = result.Body
-	}
-}
-
 // printPostResult 输出后置脚本结果
 func printPostResult(result *model.ScriptResult) {
 	if result.Output != "" {
@@ -259,6 +273,47 @@ func printHTTPResponse(statusCode int, headers http.Header, body []byte, elapsed
 	} else {
 		fmt.Println(string(body))
 	}
+}
+
+// CopyHTTP 生成等效 curl 命令
+func (s *Sender) CopyHTTP(api *model.API, overrides map[string]string) (string, error) {
+	baseURL, err := s.resolveURL(api)
+	if err != nil {
+		return "", err
+	}
+
+	var body interface{}
+	if api.BodyJSON != "" {
+		if err := json.Unmarshal([]byte(api.BodyJSON), &body); err != nil {
+			return "", fmt.Errorf("解析请求体失败: %w", err)
+		}
+	}
+	if len(overrides) > 0 && body != nil {
+		if bodyMap, ok := body.(map[string]interface{}); ok {
+			for k, v := range overrides {
+				bodyMap[k] = v
+			}
+		}
+	}
+	if s.plaintext != "" {
+		if err := json.Unmarshal([]byte(s.plaintext), &body); err != nil {
+			return "", fmt.Errorf("解析 --plaintext 参数失败: %w", err)
+		}
+	}
+
+	var cmd strings.Builder
+	cmd.WriteString("curl -X ")
+	cmd.WriteString(api.Method)
+
+	cmd.WriteString(fmt.Sprintf(" '%s'", baseURL))
+	cmd.WriteString(" -H 'Content-Type: application/json'")
+
+	if body != nil {
+		data, _ := json.Marshal(body)
+		cmd.WriteString(fmt.Sprintf(" -d '%s'", string(data)))
+	}
+
+	return cmd.String(), nil
 }
 
 // parseTimeout 解析超时时间字符串

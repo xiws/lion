@@ -45,8 +45,8 @@ type DefaultInfo struct {
 
 // HooksInfo 脚本钩子
 type HooksInfo struct {
-	PreRequest  string
-	PostRequest string
+	PreRequest  []string
+	PostRequest []string
 }
 
 // GroupInfo 分组摘要
@@ -106,8 +106,8 @@ func Show(name string) (*ShowResult, error) {
 
 		if cfg.Hooks != nil {
 			result.Hooks = &HooksInfo{
-				PreRequest:  cfg.Hooks.PreRequest,
-				PostRequest: cfg.Hooks.PostRequest,
+				PreRequest:  []string(cfg.Hooks.PreRequest),
+				PostRequest: []string(cfg.Hooks.PostRequest),
 			}
 		}
 
@@ -234,10 +234,10 @@ func Check(name string) (*CheckResult, error) {
 
 		// 检查脚本引用是否存在
 		for _, api := range group.APIs {
-			if api.Script != "" {
-				scriptPath := expandPath(api.Script)
-				if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-					result.Errors = append(result.Errors, fmt.Sprintf("接口 %q 引用的脚本不存在: %s", api.ID, api.Script))
+			for _, scriptPath := range api.Scripts {
+				expanded := expandPath(scriptPath)
+				if _, err := os.Stat(expanded); os.IsNotExist(err) {
+					result.Errors = append(result.Errors, fmt.Sprintf("接口 %q 引用的脚本不存在: %s", api.ID, scriptPath))
 				}
 			}
 		}
@@ -368,13 +368,19 @@ func FormatShowResult(r *ShowResult) string {
 	}
 
 	// 脚本钩子
-	if r.Hooks != nil && (r.Hooks.PreRequest != "" || r.Hooks.PostRequest != "") {
+	if r.Hooks != nil && (len(r.Hooks.PreRequest) > 0 || len(r.Hooks.PostRequest) > 0) {
 		sb.WriteString("\n脚本钩子:\n")
-		if r.Hooks.PreRequest != "" {
-			sb.WriteString(fmt.Sprintf("  请求前: %s\n", r.Hooks.PreRequest))
+		if len(r.Hooks.PreRequest) > 0 {
+			sb.WriteString("  请求前:\n")
+			for _, s := range r.Hooks.PreRequest {
+				sb.WriteString(fmt.Sprintf("    - %s\n", s))
+			}
 		}
-		if r.Hooks.PostRequest != "" {
-			sb.WriteString(fmt.Sprintf("  请求后: %s\n", r.Hooks.PostRequest))
+		if len(r.Hooks.PostRequest) > 0 {
+			sb.WriteString("  请求后:\n")
+			for _, s := range r.Hooks.PostRequest {
+				sb.WriteString(fmt.Sprintf("    - %s\n", s))
+			}
 		}
 	}
 

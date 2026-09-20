@@ -81,10 +81,10 @@ func ParseGroupFile(filePath string) (*model.Group, error) {
 			continue
 		}
 
-		// 匹配接口脚本
+		// 匹配接口脚本（支持多个 script 指令）
 		if currentAPI != nil {
 			if m := reScript.FindStringSubmatch(line); m != nil {
-				currentAPI.Script = m[1]
+				currentAPI.Scripts = append(currentAPI.Scripts, m[1])
 				continue
 			}
 		}

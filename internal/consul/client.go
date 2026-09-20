@@ -46,10 +46,17 @@ func (c *Client) DiscoverService(serviceName string) ([]ServiceInstance, error) 
 
 	var instances []ServiceInstance
 	for _, entry := range entries {
+		if strings.HasPrefix(entry.Service.ID, "debug-") {
+			continue
+		}
 		instances = append(instances, ServiceInstance{
 			Address: entry.Service.Address,
 			Port:    entry.Service.Port,
 		})
+	}
+
+	if len(instances) == 0 {
+		return nil, fmt.Errorf("服务 %s 没有可用实例", serviceName)
 	}
 
 	return instances, nil

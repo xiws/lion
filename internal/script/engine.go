@@ -37,6 +37,39 @@ func (e *Engine) ExecutePostScript(scriptPath, action string, ctx *model.ScriptC
 	return e.execute(scriptPath, action, ctx)
 }
 
+// ExecutePreChain 链式执行多个前置脚本，每个脚本的输出作为下一个的输入
+func (e *Engine) ExecutePreChain(scripts []string, action string, ctx *model.ScriptContext) (*model.ScriptResult, error) {
+	var lastResult *model.ScriptResult
+	for _, sp := range scripts {
+		result, err := e.execute(sp, action, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("脚本 %s: %w", sp, err)
+		}
+		applyPreResult(ctx, result)
+		lastResult = result
+	}
+	return lastResult, nil
+}
+
+// ExecutePostChain 链式执行多个后置脚本，每个脚本的输出作为下一个的输入
+func (e *Engine) ExecutePostChain(scripts []string, action string, ctx *model.ScriptContext) ([]*model.ScriptResult, error) {
+	var results []*model.ScriptResult
+	for _, sp := range scripts {
+		result, err := e.execute(sp, action, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("脚本 %s: %w", sp, err)
+		}
+		// 将后置结果中的 extracted 数据反馈到下一个脚本的上下文
+		if result.Extracted != nil {
+			if ctx.Body == nil {
+				ctx.Body = make(map[string]interface{})
+			}
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
 // CheckScriptExists 检查脚本是否存在
 func CheckScriptExists(scriptPath string) error {
 	expandedPath := expandPath(scriptPath)
@@ -140,12 +173,12 @@ func (e *Engine) getRunner(name string, candidates ...string) string {
 	return name
 }
 
-// ResolveScript 解析接口实际使用的脚本路径
+// ResolveScripts 解析接口实际使用的脚本路径列表
 // 优先级：接口级 > 全局 hooks
-func ResolveScript(api *model.API, hooks *model.Hooks, isPre bool) string {
+func ResolveScripts(api *model.API, hooks *model.Hooks, isPre bool) []string {
 	// 接口级脚本优先
-	if api.Script != "" {
-		return api.Script
+	if len(api.Scripts) > 0 {
+		return api.Scripts
 	}
 
 	// 回退到全局 hooks
@@ -156,7 +189,20 @@ func ResolveScript(api *model.API, hooks *model.Hooks, isPre bool) string {
 		return hooks.PostRequest
 	}
 
-	return ""
+	return nil
+}
+
+// applyPreResult 将前置脚本结果应用到上下文（供链式执行使用）
+func applyPreResult(ctx *model.ScriptContext, result *model.ScriptResult) {
+	if result.Headers != nil {
+		ctx.Headers = result.Headers
+	}
+	if result.Params != nil {
+		ctx.Params = result.Params
+	}
+	if result.Body != nil {
+		ctx.Body = result.Body
+	}
 }
 
 // expandPath 展开路径中的 ~ 为用户主目录

@@ -58,8 +58,10 @@ func GenerateGroupMarkdown(collectionName, service string, group *model.Group, f
 		}
 		sb.WriteString(fmt.Sprintf("### %s `%s`\n\n", header, api.ID))
 
-		if api.Script != "" {
-			sb.WriteString(fmt.Sprintf("> script: %s\n", api.Script))
+		for _, s := range api.Scripts {
+			sb.WriteString(fmt.Sprintf("> script: %s\n", s))
+		}
+		if len(api.Scripts) > 0 {
 			sb.WriteString("\n")
 		}
 
@@ -113,8 +115,8 @@ func mergeDefaults(old, new *model.Group) {
 				api.BodyJSON = oldAPI.BodyJSON
 			}
 			// 保留用户配置的脚本
-			if oldAPI.Script != "" {
-				api.Script = oldAPI.Script
+			if len(oldAPI.Scripts) > 0 {
+				api.Scripts = oldAPI.Scripts
 			}
 		}
 	}

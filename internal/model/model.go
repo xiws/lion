@@ -1,5 +1,37 @@
 package model
 
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
+// StringSlice 支持 YAML 中单个字符串或字符串列表的灵活类型
+//
+//	hooks:
+//	  pre_request: "single.py"          # 单个脚本
+//	  post_request:                      # 多个脚本
+//	    - "check.py"
+//	    - "log.py"
+type StringSlice []string
+
+// UnmarshalYAML 实现 yaml.Unmarshaler，兼容字符串和列表
+func (s *StringSlice) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		*s = StringSlice{value.Value}
+		return nil
+	}
+	if value.Kind == yaml.SequenceNode {
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*s = list
+		return nil
+	}
+	return fmt.Errorf("期望字符串或列表，得到节点类型 %d", value.Kind)
+}
+
 // Collection 接口集合，对应 api/${collection}/ 目录
 type Collection struct {
 	Name      string   `json:"name"`       // 集合名称（目录名）
@@ -18,12 +50,12 @@ type Group struct {
 
 // API 单个接口
 type API struct {
-	ID          string `json:"id"`          // 唯一标识（反引号内内容）
-	Method      string `json:"method"`      // HTTP Method 或 gRPC 方法名
-	Path        string `json:"path"`        // 请求路径或全限定方法名
-	BodyJSON    string `json:"body_json"`   // 完整请求结构 JSON（代码块内容，用户可编辑）
-	Script      string `json:"script"`      // 接口级脚本路径（空则使用全局 hooks）
-	Description string `json:"description"` // 接口描述
+	ID          string   `json:"id"`          // 唯一标识（反引号内内容）
+	Method      string   `json:"method"`      // HTTP Method 或 gRPC 方法名
+	Path        string   `json:"path"`        // 请求路径或全限定方法名
+	BodyJSON    string   `json:"body_json"`   // 完整请求结构 JSON（代码块内容，用户可编辑）
+	Scripts     []string `json:"scripts"`     // 接口级脚本路径列表（空则使用全局 hooks）
+	Description string   `json:"description"` // 接口描述
 }
 
 // GlobalConfig 全局配置，对应 global.yaml
@@ -57,8 +89,8 @@ type DefaultRule struct {
 
 // Hooks 全局脚本钩子
 type Hooks struct {
-	PreRequest  string `json:"pre_request,omitempty"  yaml:"pre_request,omitempty"`  // 请求前脚本路径
-	PostRequest string `json:"post_request,omitempty" yaml:"post_request,omitempty"` // 请求后脚本路径
+	PreRequest  StringSlice `json:"pre_request,omitempty"  yaml:"pre_request,omitempty"`  // 请求前脚本路径列表
+	PostRequest StringSlice `json:"post_request,omitempty" yaml:"post_request,omitempty"` // 请求后脚本路径列表
 }
 
 // ScriptContext 脚本上下文，传递给脚本的完整信息
