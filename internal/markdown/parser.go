@@ -132,11 +132,18 @@ func ParseCollectionDir(collectionName string) (*model.Collection, error) {
 			return nil, fmt.Errorf("解析文件 %s 失败: %w", filePath, err)
 		}
 
-		// 从第一个分组文件的元数据中提取 Collection 级别信息
-		if len(collection.Groups) == 0 {
-			meta, err := ParseMetadata(filePath)
-			if err == nil {
-				collection.Source = meta["source"]
+		// 从各个分组文件的元数据中提取 Collection 级别信息（取第一个非空值）
+		if meta, err := ParseMetadata(filePath); err == nil {
+			if collection.Source == "" {
+				collection.Source = firstNonEmpty(meta["source_type"], meta["source"])
+			}
+			if collection.SourceURL == "" {
+				collection.SourceURL = meta["source_url"]
+			}
+			if len(collection.ProtoRoot) == 0 {
+				collection.ProtoRoot = strings.Fields(meta["proto_root"])
+			}
+			if collection.Service == "" {
 				collection.Service = meta["service"]
 			}
 		}
@@ -184,6 +191,16 @@ func ParseMetadata(filePath string) (map[string]string, error) {
 	}
 
 	return meta, scanner.Err()
+}
+
+// firstNonEmpty 返回第一个非空字符串
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // FindAPIByID 在 Collection 中按 ID 查找接口

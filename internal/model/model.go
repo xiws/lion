@@ -34,11 +34,12 @@ func (s *StringSlice) UnmarshalYAML(value *yaml.Node) error {
 
 // Collection 接口集合，对应 api/${collection}/ 目录
 type Collection struct {
-	Name      string   `json:"name"`       // 集合名称（目录名）
-	Source    string   `json:"source"`     // 来源类型：swagger / grpc / proto
-	SourceURL string   `json:"source_url"` // 来源地址
-	Service   string   `json:"service"`    // Consul 服务名称（用于 consul 寻址模式）
-	Groups    []*Group `json:"groups"`     // 分组列表，每组对应一个 .md 文件
+	Name      string   `json:"name"`                 // 集合名称（目录名）
+	Source    string   `json:"source"`               // 来源类型：swagger / grpc / proto
+	SourceURL string   `json:"source_url"`           // 来源地址
+	ProtoRoot []string `json:"proto_root,omitempty"` // proto import 根目录（仅 source=proto 时有意义）
+	Service   string   `json:"service"`              // Consul 服务名称（用于 consul 寻址模式）
+	Groups    []*Group `json:"groups"`               // 分组列表，每组对应一个 .md 文件
 }
 
 // Group 分组，对应一个 Markdown 文件

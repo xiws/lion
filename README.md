@@ -295,6 +295,8 @@ export LION_NODE=/usr/local/bin/node
 # order
 
 > source: swagger
+> source_type: swagger
+> source_url: http://tms-service:8080/swagger.json
 > collection: tms
 > service: tms-service
 
@@ -330,6 +332,9 @@ export LION_NODE=/usr/local/bin/node
 |------|------|------|------|
 | 分组标题 | `# {group_name}` | 是 | 一级标题，取一级路径（HTTP）或服务名（gRPC） |
 | `source` | `> source: {type}` | 是 | 来源类型：`swagger` / `grpc` / `proto` |
+| `source_type` | `> source_type: {type}` | 否 | 生成时使用的 `--type`，供 `--update` 还原参数 |
+| `source_url` | `> source_url: {url}` | 否 | 生成时使用的来源地址，供 `--update` 还原参数 |
+| `proto_root` | `> proto_root: {dir}` | 否 | proto import 根目录（空格分隔），仅 `--type proto` 时写入 |
 | `collection` | `> collection: {name}` | 是 | Collection 名称 |
 | `service` | `> service: {name}` | 否 | Consul 服务名称，`resolve: consul` 时必填 |
 | 接口标题 | `### {METHOD} {path} \`{api_id}\`` | 是 | 三级标题，反引号内为接口唯一 ID |
@@ -689,11 +694,12 @@ lion generate [source] --name <name> --type <type> [flags]
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| `[source]` | 是 | 来源地址（Swagger URL / gRPC 地址 / Proto 目录路径） |
+| `[source]` | 首次生成必填 | 来源地址（Swagger URL / gRPC 地址 / Proto 目录路径），`--update` 时可省略 |
 | `--name` | 是 | Collection 名称，决定目录路径 `api/{name}/` |
-| `--type` | 是 | 来源类型：`swagger` / `grpc` / `proto` |
+| `--type` | 首次生成必填 | 来源类型：`swagger` / `grpc` / `proto`，`--update` 时可省略 |
 | `--proto_root` | 否 | proto import 根目录（可多次指定），仅 `--type proto` 时有效 |
-| `--force` | 否 | 强制重新生成接口列表，但保留用户编辑的 JSON 值和脚本配置 |
+| `--force` | 否 | 整体覆盖：重新拉取接口列表并覆盖文件，**不**保留用户编辑 |
+| `--update` | 否 | 更新已有 Collection：来源信息从元数据自动读取，合并保留用户编辑 |
 | `--service` | 否 | Consul 服务名称，写入 Markdown 元数据 `> service:` |
 
 **示例：**
@@ -705,11 +711,32 @@ lion generate --name petstore --type swagger "https://petstore.swagger.io/v2/swa
 # 从 gRPC 反射生成，指定 Consul 服务名
 lion generate --name wms --type grpc "127.0.0.1:9090" --service wms-service
 
-# 重新生成（保留用户编辑的默认值和脚本配置）
+
+# 更新已存在的 Collection：无需重复指定 --type 和 source
+lion generate --name wms --update
+
+# 整体覆盖（丢弃用户在 JSON 代码块中的编辑）
 lion generate --name petstore --type swagger "https://petstore.swagger.io/v2/swagger.json" --force
 ```
 
-**`--force` 行为：** 重新从源拉取接口列表并更新文件，但对已存在的接口 ID，保留用户在 JSON 代码块中编辑的值和 `> script:` 配置。新增的接口使用默认值规则填充。
+**`--update` / 普通生成行为：** 重新从源拉取接口列表并更新文件，但对已存在的接口 ID，保留用户在 JSON 代码块中编辑的值和 `> script:` 配置。新增的接口使用默认值规则填充。
+
+**`--force` 行为：** 重新从源拉取接口列表并**整体覆盖**文件，不保留用户编辑的 JSON 值与脚本配置。
+
+**`--update` 行为：** 首次生成时，来源信息会写入 Markdown 元数据：
+
+```markdown
+# wms
+
+> source: grpc
+> source_type: grpc
+> source_url: 127.0.0.1:9090
+> proto_root: ./protos ./third_party/protos
+> collection: wms
+> service: wms-service
+```
+
+`--update` 会读回 `source_type` / `source_url` / `proto_root` / `service`，因此只需 `--name` 即可重新拉取接口列表，并按上述合并规则保留用户编辑。显式传入的 `--type` / `source` / `--proto_root` / `--service` 优先于元数据；`--update` 不能与 `--force` 同时使用。若目标 Collection 不存在，或元数据中缺少来源地址（旧版本生成的文件），会报错并提示先做首次生成或显式传参。
 
 ### `lion collections`
 

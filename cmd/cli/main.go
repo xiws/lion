@@ -59,21 +59,52 @@ func newGenerateCmd() *cobra.Command {
 		protoRoot []string
 		force     bool
 		service   string
+		update    bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "generate [source]",
 		Short: "生成接口集合",
-		Long:  "根据 Swagger / gRPC 反射 / Proto 文件生成接口集合",
-		Args:  cobra.ExactArgs(1),
+		Long: `根据 Swagger / gRPC 反射 / Proto 文件生成接口集合。
+
+使用 --update 时，来源类型、来源地址、proto 根目录与 service 会从已有 Collection
+的 Markdown 元数据中自动读取，因此只需指定名称即可重新拉取接口列表：
+
+  lion generate --name wms --update
+
+接口列表会重新从来源拉取，已存在的接口 ID 保留用户编辑过的 JSON 值与脚本配置。`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			source := ""
+			if len(args) > 0 {
+				source = args[0]
+			}
+
+			if !update && source == "" {
+				return fmt.Errorf("缺少来源地址参数，或使用 --update 从已有 Collection 的元数据中读取")
+			}
+			if !update && typ == "" {
+				return fmt.Errorf("缺少 --type 参数（swagger / grpc / proto），或使用 --update 从已有 Collection 的元数据中读取")
+			}
+			if update && force {
+				return fmt.Errorf("--update 为合并模式（保留用户编辑的 JSON 值与脚本），不能与 --force（整体覆盖）同时使用")
+			}
+
 			opts := &generate.Options{
 				Name:      name,
 				Type:      typ,
-				Source:    args[0],
+				Source:    source,
 				ProtoRoot: protoRoot,
 				Force:     force,
 				Service:   service,
+			}
+
+			if update {
+				if err := generate.Update(opts); err != nil {
+					return err
+				}
+				fmt.Printf("✅ Collection %q 更新完成\n", name)
+				return nil
 			}
 
 			if err := generate.Run(opts); err != nil {
@@ -86,12 +117,12 @@ func newGenerateCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Collection 名称（必填）")
-	cmd.Flags().StringVar(&typ, "type", "", "来源类型: swagger / grpc / proto（必填）")
+	cmd.Flags().StringVar(&typ, "type", "", "来源类型: swagger / grpc / proto（首次生成必填，--update 时可省略）")
 	cmd.Flags().StringArrayVar(&protoRoot, "proto_root", nil, "proto import 根目录（可多次指定）")
-	cmd.Flags().BoolVar(&force, "force", false, "强制重新生成，保留用户编辑的默认值")
+	cmd.Flags().BoolVar(&force, "force", false, "强制整体覆盖：重新拉取接口列表并覆盖文件，不保留用户编辑的 JSON 值与脚本")
+	cmd.Flags().BoolVar(&update, "update", false, "更新已有 Collection：来源信息从元数据读取，无需重复指定 --type 和 source")
 	cmd.Flags().StringVar(&service, "service", "", "Consul 服务名称（用于 consul 寻址模式）")
 	_ = cmd.MarkFlagRequired("name")
-	_ = cmd.MarkFlagRequired("type")
 
 	return cmd
 }

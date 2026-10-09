@@ -94,7 +94,10 @@ lion generate --name "wms" --type proto "./protos" \
   --proto_root "./protos" \
   --proto_root "./third_party/protos"
 
-# 重新生成（覆盖已有 Markdown 中的接口列表，保留用户编辑的默认值）
+# 更新已存在的集合（合并，保留用户编辑）：来源类型/地址/proto_root/service 从元数据自动读取
+lion generate --name "wms" --update
+
+# 整体覆盖（丢弃用户在 JSON 代码块中的编辑）
 lion generate --name "tms" --type swagger "http://tms-service:8080/swagger.json" --force
 ```
 
@@ -103,10 +106,13 @@ lion generate --name "tms" --type swagger "http://tms-service:8080/swagger.json"
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `--name` | 是 | Collection 名称，同时决定目录路径 `api/${name}/`。分组文件名：HTTP 取一级路径（`/order/create` → `order`），gRPC 取服务名（`rbe.entity.petrel.ScheduleTask`） |
-| `--type` | 是 | 来源类型：`swagger` / `grpc` / `proto` |
+| `--type` | 首次生成必填 | 来源类型：`swagger` / `grpc` / `proto`，`--update` 时可省略 |
 | `--proto_root` | 否 | proto import 根目录，仅 `--type proto` 时有效，可多次指定 |
-| `--force` | 否 | 强制重新生成接口列表，但保留用户编辑的默认值配置 |
+| `--force` | 否 | 整体覆盖：重新拉取接口列表并覆盖文件，不保留用户编辑的 JSON 值与脚本配置 |
+| `--update` | 否 | 更新已有 Collection，来源信息（`source_type` / `source_url` / `proto_root` / `service`）从 Markdown 元数据自动读取 |
 | `--service` | 否 | Consul 服务名称，写入 Markdown 元数据，用于 consul 寻址模式 |
+
+**合并语义：** `--update` 与不带 `--force` 的生成都是合并模式——重新从来源拉取接口列表，已存在的接口 ID 保留用户编辑的 JSON 值与 `> script:` 配置，新增接口使用默认值填充。`--force` 则整体覆盖，`--update` 不能与 `--force` 同时使用。显式传入的参数优先于元数据；若目标 Collection 不存在或元数据缺少来源地址，会报错并提示先做首次生成或显式传参。
 
 ### collections — 管理接口分组
 
@@ -252,6 +258,8 @@ hooks:
 # order
 
 > source: swagger
+> source_type: swagger
+> source_url: http://tms-service:8080/swagger.json
 > collection: tms
 > service: tms-service
 
@@ -315,7 +323,7 @@ gRPC 示例：
 
 | 规则 | 说明 |
 |------|------|
-| **元数据** | `# {group_name}` 一级标题 + `> key: value` 引用块（`source`、`collection`、可选 `service`） |
+| **元数据** | `# {group_name}` 一级标题 + `> key: value` 引用块（`source`、`collection`、可选 `service`）；`generate` 还会写入 `source_type`、`source_url`、`proto_root`，供 `--update` 还原生成参数 |
 | **接口定义** | `### {METHOD} {path} \`{api_id}\`` 三级标题，反引号内为接口 ID |
 | **接口脚本** | `> script: {path}` 引用块，紧跟接口标题，指定该接口的专属脚本（可选） |
 | **完整请求结构** | ` ```json ` 代码块，展示接口所有字段，用注释标注必填/默认值/可选 |

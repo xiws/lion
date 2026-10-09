@@ -11,8 +11,11 @@ import (
 )
 
 // GenerateGroupMarkdown 生成分组 Markdown 文件
-func GenerateGroupMarkdown(collectionName, service string, group *model.Group, force bool) error {
-	dir, err := collectionDir(collectionName)
+//
+// 来源信息（source_type / source_url / proto_root）写入元数据，供
+// `lion generate --name <name> --update` 在只提供 --name 时还原首次生成的参数。
+func GenerateGroupMarkdown(collection *model.Collection, group *model.Group, force bool) error {
+	dir, err := collectionDir(collection.Name)
 	if err != nil {
 		return err
 	}
@@ -23,6 +26,8 @@ func GenerateGroupMarkdown(collectionName, service string, group *model.Group, f
 
 	filePath := filepath.Join(dir, group.Name+".md")
 	group.Path = filePath
+
+	service := collection.Service
 
 	// 如果文件已存在且非强制模式，合并用户编辑的默认值
 	if !force {
@@ -38,13 +43,21 @@ func GenerateGroupMarkdown(collectionName, service string, group *model.Group, f
 	}
 
 	var sb strings.Builder
-
 	// 写入一级标题
 	sb.WriteString(fmt.Sprintf("# %s\n\n", group.Name))
 
 	// 写入元数据
 	sb.WriteString(fmt.Sprintf("> source: %s\n", guessSource(group)))
-	sb.WriteString(fmt.Sprintf("> collection: %s\n", collectionName))
+	if collection.Source != "" {
+		sb.WriteString(fmt.Sprintf("> source_type: %s\n", collection.Source))
+	}
+	if collection.SourceURL != "" {
+		sb.WriteString(fmt.Sprintf("> source_url: %s\n", collection.SourceURL))
+	}
+	if len(collection.ProtoRoot) > 0 {
+		sb.WriteString(fmt.Sprintf("> proto_root: %s\n", strings.Join(collection.ProtoRoot, " ")))
+	}
+	sb.WriteString(fmt.Sprintf("> collection: %s\n", collection.Name))
 	if service != "" {
 		sb.WriteString(fmt.Sprintf("> service: %s\n", service))
 	}
@@ -80,12 +93,19 @@ func GenerateGroupMarkdown(collectionName, service string, group *model.Group, f
 
 // GenerateCollectionMarkdowns 为整个 Collection 生成 Markdown 文件
 func GenerateCollectionMarkdowns(collection *model.Collection, force bool) error {
+	if collection.Name == "" {
+		return fmt.Errorf("Collection 名称不能为空")
+	}
+
+	var firstErr error
 	for _, group := range collection.Groups {
-		if err := GenerateGroupMarkdown(collection.Name, collection.Service, group, force); err != nil {
-			return fmt.Errorf("生成分组 %s 失败: %w", group.Name, err)
+		if err := GenerateGroupMarkdown(collection, group, force); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("生成分组 %s 失败: %w", group.Name, err)
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // FormatBodyJSON 格式化 JSON 字符串（带缩进）

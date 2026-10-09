@@ -38,6 +38,25 @@ func List() ([]string, error) {
 	return collections, nil
 }
 
+// Exists 判断 Collection 是否已存在
+func Exists(name string) (bool, error) {
+	dir, err := config.LionDir()
+	if err != nil {
+		return false, err
+	}
+
+	collectionDir := filepath.Join(dir, "api", name)
+	info, err := os.Stat(collectionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("检查 Collection 目录失败: %w", err)
+	}
+
+	return info.IsDir(), nil
+}
+
 // Load 加载指定 Collection
 func Load(name string) (*model.Collection, error) {
 	return markdown.ParseCollectionDir(name)
