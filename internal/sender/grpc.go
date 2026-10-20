@@ -23,7 +23,7 @@ import (
 )
 
 // SendGRPC 发送 gRPC 请求
-func (s *Sender) SendGRPC(api *model.API, params map[string]string, overrides map[string]string) error {
+func (s *Sender) SendGRPC(api *model.API, group *model.Group, overrides map[string]string) error {
 	host, err := s.resolveHost()
 	if err != nil {
 		return err
@@ -74,18 +74,21 @@ func (s *Sender) SendGRPC(api *model.API, params map[string]string, overrides ma
 		fmt.Printf("──────────────────────────────────\n\n")
 	}
 
-	// 构造脚本上下文
+	// 构造脚本上下文，初始 header（CLI --header 传入的值）
+	reqHeaders := make(map[string]string)
+	for k, v := range s.headers {
+		reqHeaders[k] = v
+	}
 	reqCtx := &model.ScriptContext{
 		APIID:   api.ID,
 		Method:  "gRPC",
 		URL:     fmt.Sprintf("grpc://%s/%s", host, api.Path),
-		Headers: make(map[string]string),
-		Params:  params,
+		Headers: reqHeaders,
 		Body:    body,
 	}
 
 	// 执行前置脚本（支持多脚本链式执行）
-	preScripts := script.ResolveScripts(api, s.cfg.Hooks, true)
+	preScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, true)
 	if len(preScripts) > 0 {
 		result, err := s.engine.ExecutePreChain(preScripts, "pre_request", reqCtx)
 		if err != nil {
@@ -121,7 +124,7 @@ func (s *Sender) SendGRPC(api *model.API, params map[string]string, overrides ma
 	}
 
 	// 执行后置脚本（支持多脚本链式执行）
-	postScripts := script.ResolveScripts(api, s.cfg.Hooks, false)
+	postScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, false)
 	if len(postScripts) > 0 {
 		results, err := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
 		if err != nil {

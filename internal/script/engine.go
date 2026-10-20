@@ -174,19 +174,27 @@ func (e *Engine) getRunner(name string, candidates ...string) string {
 }
 
 // ResolveScripts 解析接口实际使用的脚本路径列表
-// 优先级：接口级 > 全局 hooks
-func ResolveScripts(api *model.API, hooks *model.Hooks, isPre bool) []string {
-	// 接口级脚本优先
+// 优先级：接口级 > 分组级（collection/group） > 全局 hooks
+func ResolveScripts(api *model.API, groupHooks *model.Hooks, globalHooks *model.Hooks, isPre bool) []string {
+	// 1. 接口级脚本最高优先
 	if len(api.Scripts) > 0 {
 		return api.Scripts
 	}
 
-	// 回退到全局 hooks
-	if hooks != nil {
+	// 2. 分组级（Collection）钩子次之
+	if groupHooks != nil {
 		if isPre {
-			return hooks.PreRequest
+			return groupHooks.PreRequest
 		}
-		return hooks.PostRequest
+		return groupHooks.PostRequest
+	}
+
+	// 3. 回退到全局 hooks
+	if globalHooks != nil {
+		if isPre {
+			return globalHooks.PreRequest
+		}
+		return globalHooks.PostRequest
 	}
 
 	return nil

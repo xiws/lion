@@ -773,6 +773,7 @@ lion send <api-id> [flags]
 | `--env` | 否 | 目标环境名（不指定则使用配置中的第一个环境） |
 | `--addr` | 直连地址 | 直连地址，覆盖环境配置中的 `host` |
 | `--param` | 否 | 覆盖参数，格式 `key=value`（可多次使用） |
+| `--plaintext` | 否 | 完整请求体 JSON（字符串），**整体覆盖**接口定义中的请求体 |
 | `--output` | 否 | 输出格式：`pretty` / `json` / `raw`（覆盖全局配置） |
 | `--verbose` | 否 | 显示完整请求/响应报文 |
 
@@ -784,6 +785,36 @@ lion send createOrder --addr "127.0.0.1:8080" --param "orderId=12345"
 lion send getOrder --env dev --output json
 lion send getUser --env staging --param "userId=100" --param "fields=name,email"
 ```
+
+#### 使用 `--plaintext` 指定完整请求体
+
+`--plaintext` 接收一段**完整的请求体 JSON 字符串**，直接作为请求体发送，忽略 Markdown 接口定义（JSON 代码块）中的内容，也忽略 `--param` 的覆盖。适用于临时构造一个与接口定义完全不同的报文，或粘贴一段现成的 JSON 报文调试：
+
+```bash
+# HTTP：直接传入一段完整 JSON 报文
+lion send createOrder --env dev --plaintext '{"orderId":"12345","warehouseId":"W001"}'
+
+# HTTP：多行 JSON 便于阅读（使用单引号包裹，内部字段用双引号）
+lion send createOrder --env dev --plaintext '{
+  "orderId": "12345",
+  "warehouseId": "W001",
+  "items": [
+    {"skuId": "SKU-1", "quantity": 2}
+  ]
+}'
+
+# gRPC：同样适用于 gRPC 接口的请求体
+lion send List --addr "127.0.0.1:9090" --plaintext '{"index":1,"size":10}'
+
+# 配合 --verbose 查看实际发送的请求体
+lion send createOrder --env dev --verbose --plaintext '{"orderId":"12345"}'
+```
+
+**注意事项：**
+
+- `--plaintext` 的值必须是**合法 JSON**（对象或数组），否则报错 `解析 --plaintext 参数失败: ...` 且不会发送请求
+- 生效顺序为「Markdown 请求体 → `--param` 覆盖 → `--plaintext` 整体覆盖」，因此 `--plaintext` 优先级最高，同时使用 `--param` 不会生效
+- 在 Shell 中建议用**单引号**包裹 JSON，避免 `"` 被 Shell 解析；Windows CMD 中请使用双引号并转义内部引号
 
 ### `lion config`
 

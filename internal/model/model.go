@@ -44,9 +44,10 @@ type Collection struct {
 
 // Group 分组，对应一个 Markdown 文件
 type Group struct {
-	Name string `json:"name"` // 分组名（文件名，如 "order"、"rbe.entity.petrel.ScheduleTask"）
-	Path string `json:"path"` // Markdown 文件完整路径
-	APIs []*API `json:"apis"` // 该分组下的接口列表
+	Name  string `json:"name"`            // 分组名（文件名，如 "order"、"rbe.entity.petrel.ScheduleTask"）
+	Path  string `json:"path"`            // Markdown 文件完整路径
+	APIs  []*API `json:"apis"`            // 该分组下的接口列表
+	Hooks *Hooks `json:"hooks,omitempty"` // 分组级脚本钩子（优先级高于全局 hooks）
 }
 
 // API 单个接口

@@ -11,13 +11,27 @@ import (
 	"lion/internal/model"
 )
 
+// splitHooks 将逗号分隔的钩子字符串拆分为字符串列表
+func splitHooks(raw string) []string {
+	var result []string
+	for _, part := range strings.Split(raw, ",") {
+		s := strings.TrimSpace(part)
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
 var (
 	// 匹配三级标题: ### POST /order/create `createOrder`
 	reAPIHeader = regexp.MustCompile(`^###\s+(.+?)\s+` + "`" + `(.+?)` + "`" + `\s*$`)
-	// 匹配 script 引用块: > script: ~/.lion/scripts/xxx.py
+	// 匹配 script 引用块（接口级）: > script: ~/.lion/scripts/xxx.py
 	reScript = regexp.MustCompile(`^>\s+script:\s*(.+?)\s*$`)
 	// 匹配元数据引用块: > key: value
 	reMeta = regexp.MustCompile(`^>\s+(\w+):\s*(.+?)\s*$`)
+	// 匹配分组级脚本钩子: > hooks.pre_request: script.py[,script2.py]
+	reHookDirective = regexp.MustCompile(`^>\s+hooks\.(pre_request|post_request):\s*(.+?)\s*$`)
 	// 匹配一级标题: # group_name
 	reGroupTitle = regexp.MustCompile(`^#\s+(.+?)\s*$`)
 )
@@ -40,8 +54,24 @@ func ParseGroupFile(filePath string) (*model.Group, error) {
 	var inJSONBlock bool
 	var jsonLines []string
 
+	// 在分组级别收集 hooks（在第一个 ### API 标题之前生效）
+	var groupPreHooks, groupPostHooks []string
+
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// 处理分组级脚本钩子 > hooks.pre_request / > hooks.post_request
+		if m := reHookDirective.FindStringSubmatch(line); m != nil {
+			hookType := m[1] // "pre_request" or "post_request"
+			rawValue := m[2] // "script.py[,script2.py]"
+			scripts := splitHooks(rawValue)
+			if hookType == "pre_request" {
+				groupPreHooks = append(groupPreHooks, scripts...)
+			} else {
+				groupPostHooks = append(groupPostHooks, scripts...)
+			}
+			continue
+		}
 
 		// 处理 JSON 代码块
 		if strings.HasPrefix(line, "```json") {
@@ -97,6 +127,14 @@ func ParseGroupFile(filePath string) (*model.Group, error) {
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("读取文件失败: %w", err)
+	}
+
+	// 附加分组级钩子（仅在配置了时才创建 Hooks 对象）
+	if len(groupPreHooks) > 0 || len(groupPostHooks) > 0 {
+		group.Hooks = &model.Hooks{
+			PreRequest:  groupPreHooks,
+			PostRequest: groupPostHooks,
+		}
 	}
 
 	return group, nil

@@ -260,6 +260,7 @@ func newSendCmd() *cobra.Command {
 		env       string
 		addr      string
 		params    []string
+		headers   []string
 		output    string
 		verbose   bool
 		plaintext string
@@ -267,9 +268,10 @@ func newSendCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "send <api-id>",
-		Short: "发送请求",
-		Args:  cobra.ExactArgs(1),
+		Use:          "send <api-id>",
+		Short:        "发送请求",
+		SilenceUsage: true, // 请求失败时不打印 Usage
+		Args:         cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiID := args[0]
 
@@ -284,8 +286,8 @@ func newSendCmd() *cobra.Command {
 				cfg.Global.Output = output
 			}
 
-			// 查找接口
-			coll, _, api, err := collection.GetAPI(apiID)
+			// 查找接口（同时获取 Group，用于分组级 hooks）
+			coll, group, api, err := collection.GetAPI(apiID)
 			if err != nil {
 				return err
 			}
@@ -299,8 +301,23 @@ func newSendCmd() *cobra.Command {
 				}
 			}
 
-			// 创建发送器（传入 Collection 的 Consul 服务名称）
-			s, err := sender.NewSender(cfg, env, addr, coll.Service, plaintext, verbose)
+			// 解析 --header 参数
+			headerMap := make(map[string]string)
+			for _, h := range headers {
+				idx := strings.Index(h, "=")
+				if idx > 0 {
+					headerMap[h[:idx]] = h[idx+1:]
+				} else {
+					// 也支持冒号分隔
+					idx = strings.Index(h, ":")
+					if idx > 0 {
+						headerMap[h[:idx]] = h[idx+1:]
+					}
+				}
+			}
+
+			// 创建发送器（传入 Collection 的 Consul 服务名称、headers、是否 verbose）
+			s, err := sender.NewSender(cfg, env, addr, coll.Service, plaintext, verbose, headerMap)
 			if err != nil {
 				return fmt.Errorf("创建发送器失败: %w", err)
 			}
@@ -325,19 +342,20 @@ func newSendCmd() *cobra.Command {
 
 			// 判断是 HTTP 还是 gRPC
 			if isGRPC(api) {
-				return s.SendGRPC(api, nil, overrides)
+				return s.SendGRPC(api, group, overrides)
 			}
-			return s.SendHTTP(api, nil, overrides)
+			return s.SendHTTP(api, group, overrides)
 		},
 	}
 
-	cmd.Flags().StringVar(&env, "env", "", "目标环境")
-	cmd.Flags().StringVar(&addr, "addr", "", "直连地址（覆盖配置中的 host）")
+	cmd.Flags().StringVarP(&env, "env", "e", "", "目标环境")
+	cmd.Flags().StringVarP(&addr, "addr", "a", "", "直连地址（覆盖配置中的 host）")
 	cmd.Flags().StringArrayVar(&params, "param", nil, "覆盖参数 (key=value)")
-	cmd.Flags().StringVar(&output, "output", "", "输出格式: pretty / json / raw")
-	cmd.Flags().BoolVar(&verbose, "verbose", false, "显示完整请求信息")
-	cmd.Flags().StringVar(&plaintext, "plaintext", "", "完整请求体 JSON（覆盖接口定义的请求体）")
-	cmd.Flags().BoolVar(&copy, "copy", false, "生成等效 curl/grpcurl 命令（不发送请求）")
+	cmd.Flags().StringArrayVarP(&headers, "header", "H", nil, "自定义请求头 (key=value 或 key: value，可多次指定)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "输出格式: pretty / json / raw")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "显示完整请求信息")
+	cmd.Flags().StringVarP(&plaintext, "plaintext", "P", "", "完整请求体 JSON（覆盖接口定义的请求体）")
+	cmd.Flags().BoolVarP(&copy, "copy", "c", false, "生成等效 curl/grpcurl 命令（不发送请求）")
 
 	return cmd
 }

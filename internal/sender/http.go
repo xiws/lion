@@ -21,14 +21,15 @@ type Sender struct {
 	env       *model.Environment
 	envName   string
 	engine    *script.Engine
-	addr      string // 命令行 --addr 覆盖
-	service   string // Consul 服务名称
-	plaintext string // --plaintext 完整请求体
-	verbose   bool   // --verbose 显示完整请求信息
+	addr      string            // 命令行 --addr 覆盖
+	service   string            // Consul 服务名称
+	plaintext string            // --plaintext 完整请求体
+	verbose   bool              // --verbose 显示完整请求信息
+	headers   map[string]string // --header 自定义请求头
 }
 
 // NewSender 创建发送器
-func NewSender(cfg *model.GlobalConfig, envName, addr, service, plaintext string, verbose bool) (*Sender, error) {
+func NewSender(cfg *model.GlobalConfig, envName, addr, service, plaintext string, verbose bool, extraHeaders map[string]string) (*Sender, error) {
 	name, env, err := config.GetEnvironment(cfg, envName)
 	if err != nil {
 		return nil, err
@@ -49,20 +50,24 @@ func NewSender(cfg *model.GlobalConfig, envName, addr, service, plaintext string
 		service:   service,
 		plaintext: plaintext,
 		verbose:   verbose,
+		headers:   extraHeaders,
 	}, nil
 }
 
 // SendHTTP 发送 HTTP 请求
-func (s *Sender) SendHTTP(api *model.API, params map[string]string, overrides map[string]string) error {
+func (s *Sender) SendHTTP(api *model.API, group *model.Group, overrides map[string]string) error {
 	// 构造请求 URL
 	baseURL, err := s.resolveURL(api)
 	if err != nil {
 		return err
 	}
 
-	// 构造请求头
+	// 构造请求头：默认 + --header 自定义头（CLI 覆盖默认值）
 	headers := map[string]string{
 		"Content-Type": "application/json",
+	}
+	for k, v := range s.headers {
+		headers[k] = v
 	}
 
 	// 解析请求体
@@ -109,12 +114,11 @@ func (s *Sender) SendHTTP(api *model.API, params map[string]string, overrides ma
 		Method:  api.Method,
 		URL:     baseURL,
 		Headers: headers,
-		Params:  params,
 		Body:    body,
 	}
 
 	// 执行前置脚本（支持多脚本链式执行）
-	preScripts := script.ResolveScripts(api, s.cfg.Hooks, true)
+	preScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, true)
 	if len(preScripts) > 0 {
 		result, err := s.engine.ExecutePreChain(preScripts, "pre_request", ctx)
 		if err != nil {
@@ -186,7 +190,7 @@ func (s *Sender) SendHTTP(api *model.API, params map[string]string, overrides ma
 	}
 
 	// 执行后置脚本（支持多脚本链式执行）
-	postScripts := script.ResolveScripts(api, s.cfg.Hooks, false)
+	postScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, false)
 	if len(postScripts) > 0 {
 		results, err := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
 		if err != nil {
