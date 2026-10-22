@@ -180,7 +180,7 @@ environments:
     consul_addr: "https://consul.dev.shijizhongyun.com/"
     consul_token: "3f84201a-31a2-c843-bbc0-0a45983aa7b7"
     resolve: consul       # 寻址方式：consul / direct
-    headers:              # 环境级固定请求头 / gRPC metadata（覆盖 global.headers）
+    headers:              # 环境级固定请求头 / gRPC metadata（覆盖同一文件中的 global.headers）
       x-tenant-id: "T001"
   local:
     resolve: direct       # 直连模式
@@ -211,9 +211,24 @@ global:
     service: "bsi.rbe.entity.petrel"
     bsi-instance: "RBE_AA"
     debugkey: "***"
+
+environments:
+  dev:
+    headers:
+      x-tenant-id: "T002"
 ```
 
-合并规则：Collection 配置覆盖 `global.yaml`，未写的字段继续继承全局配置；`environments` 按环境名深合并，`headers` / `hooks` / `defaults` 按 key 合并。`lion config show <collection>` 展示的是合并后的最终配置。
+合并规则：Collection 配置覆盖 `global.yaml`，未写的字段继续继承全局配置；`environments` 按环境名深合并，`hooks` / `defaults` 按 key 合并。`headers` 按以下顺序逐层合并（低 → 高，后层覆盖前层的同名 key）：
+
+```text
+global.yaml 的 global.headers
+  < global.yaml 的 environments.<env>.headers
+  < <collection>.yaml 的 global.headers
+  < <collection>.yaml 的 environments.<env>.headers
+  < --header/-H
+```
+
+`lion config show <collection>` 展示的是合并后的配置；`<collection>.yaml` 的 `global.headers` 会显示在每个环境的固定 Headers 中。
 
 ### api/${collection}/${group}.md — 分组 Markdown
 
@@ -226,7 +241,7 @@ global:
 3. 请求结构：从 `api/${collection}/${group}.md` 中对应接口的 JSON 代码块读取（用户可编辑）
 4. 脚本优先级：接口级 `> script:` > 全局 `hooks`（接口级覆盖全局）
 5. 若命令行传入 `--addr`，覆盖环境配置中的 `host`
-6. 固定 header / gRPC metadata 优先级：`global.yaml` < `<collection>.yaml`；同一份文件内 `environments.<env>.headers` 覆盖 `global.headers`；`--header/-H` 最高
+6. 固定 header / gRPC metadata 优先级（低 → 高）：`global.yaml` 的 `global.headers` < `global.yaml` 的 `environments.<env>.headers` < `<collection>.yaml` 的 `global.headers` < `<collection>.yaml` 的 `environments.<env>.headers` < `--header/-H`
 
 ---
 

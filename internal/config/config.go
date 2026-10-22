@@ -104,6 +104,19 @@ func ApplyCollectionConfig(base *model.GlobalConfig, collectionName string) (*mo
 }
 
 // mergeGlobalConfig 将 overlay 合并到 base，返回新配置，不修改 base。
+//
+// 固定 header / gRPC metadata 的生效顺序（低 -> 高）：
+//
+//	global.yaml 的 global.headers
+//	  < global.yaml 的 environments.<env>.headers
+//	  < <collection>.yaml 的 global.headers
+//	  < <collection>.yaml 的 environments.<env>.headers
+//	  < --header/-H
+//
+// 发送时 sender 按 global.headers -> environments.<env>.headers -> CLI 合并，
+// 因此 Collection 的 global.headers 必须在环境级 headers 之后、Collection
+// 环境级 headers 之前落到每个环境上，才能让 global.yaml 的环境级 headers
+// 不覆盖它。
 func mergeGlobalConfig(base, overlay *model.GlobalConfig) *model.GlobalConfig {
 	out := *base
 
@@ -114,17 +127,31 @@ func mergeGlobalConfig(base, overlay *model.GlobalConfig) *model.GlobalConfig {
 		out.Global.Output = overlay.Global.Output
 	}
 	out.Global.ScriptRunners = mergeStringMap(base.Global.ScriptRunners, overlay.Global.ScriptRunners)
+	// Global.Headers 保留 Collection 的 global.headers，供 config show 展示；
+	// 发送时 env.Headers 会再次叠加它，保证它覆盖 global.yaml 的环境级 headers。
 	out.Global.Headers = mergeHeaderMap(base.Global.Headers, overlay.Global.Headers)
 
 	// Environment 按环境名深合并：Collection 只写 headers 时仍保留全局的 host/consul 配置
 	out.Environments = cloneEnvironments(base.Environments)
+	// 先把 Collection 的 global.headers 落到每个环境上（位于 global.yaml 环境级
+	// headers 之后），随后再让 Collection 环境级 headers 覆盖它。
+	if len(overlay.Global.Headers) > 0 {
+		for _, env := range out.Environments {
+			if env == nil {
+				continue
+			}
+			env.Headers = mergeHeaderMap(env.Headers, overlay.Global.Headers)
+		}
+	}
 	for name, overEnv := range overlay.Environments {
 		if overEnv == nil {
 			continue
 		}
 		env := out.Environments[name]
 		if env == nil {
-			env = &model.Environment{}
+			env = &model.Environment{
+				Headers: mergeHeaderMap(nil, overlay.Global.Headers),
+			}
 			out.Environments[name] = env
 		}
 		if overEnv.Resolve != "" {
@@ -210,16 +237,23 @@ func mergeStringMap(base, overlay map[string]string) map[string]string {
 	return dst
 }
 
-// mergeHeaderMap 合并 header / metadata，按大小写不敏感覆盖，避免同名 key 重复
+// mergeHeaderMap 合并 header / metadata，按大小写不敏感覆盖，避免同名 key 重复。
+// 始终返回新 map，并忽略空 key / 纯空白 key。
 func mergeHeaderMap(base, overlay map[string]string) map[string]string {
-	if len(overlay) == 0 {
-		return base
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
 	}
-	dst := copyStringMap(base)
-	if dst == nil {
-		dst = make(map[string]string, len(overlay))
+	dst := make(map[string]string, len(base)+len(overlay))
+	for k, v := range base {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		dst[k] = v
 	}
 	for k, v := range overlay {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
 		for existing := range dst {
 			if existing != k && strings.EqualFold(existing, k) {
 				delete(dst, existing)

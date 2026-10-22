@@ -230,7 +230,7 @@ hooks:
 | `environments.*.host` | string | 空 | 直连地址，`resolve: direct` 时使用 |
 | `environments.*.consul_addr` | string | 空 | Consul 地址，`resolve: consul` 时使用 |
 | `environments.*.consul_token` | string | 空 | Consul ACL Token |
-| `environments.*.headers` | map | 空 | 当前环境固定请求头 / gRPC metadata，覆盖 `global.headers` |
+| `environments.*.headers` | map | 空 | 当前环境固定请求头 / gRPC metadata，覆盖同一文件中的 `global.headers` |
 | `defaults.types` | map | 空 | 按类型名匹配的默认值，key 为类型名，value 为 JSON 字符串 |
 | `defaults.fields` | map | 空 | 按字段名匹配的默认值，key 为 `*.fieldName` 格式 pattern，value 为默认值 |
 | `hooks.pre_request` | string | 空 | 全局前置脚本路径 |
@@ -260,6 +260,8 @@ environments:
 ```text
 global.headers  <  environments.<env>.headers  <  --header/-H
 ```
+
+配置了 Collection 级 `<collection>.yaml` 时，完整优先级见下文「Collection 级配置」。
 
 示例：
 
@@ -296,13 +298,18 @@ global:
     service: "bsi.rbe.entity.petrel"
     bsi-instance: "RBE_AA"
     debugkey: "aK8#pW7zN1qR5eL"
+
+environments:
+  dev:
+    headers:
+      x-tenant-id: "T002"   # 仅 petrel + dev 环境，覆盖上层同名 key
 ```
 
-这样只有 `petrel` 集合的请求会带这三个 metadata，其他集合不受影响。
+这样只有 `petrel` 集合的请求会带这三个 metadata；`dev` 环境的请求还会额外带上 `x-tenant-id`，其他集合不受影响。
 
 合并细节：
 
-- `global.headers` / `environments.*.headers`：按 key 合并，Collection 覆盖全局
+- `headers`：按 `global.yaml` 全局 < `global.yaml` 环境 < `<collection>.yaml` 全局 < `<collection>.yaml` 环境逐层合并，后层覆盖前层的同名 key（大小写不敏感）；`<collection>.yaml` 的 `global.headers` 会应用到该 Collection 的所有环境
 - `environments.*`：按环境名深合并；Collection 只写 `headers` 时，仍继承全局的 `host` / `consul_addr` / `consul_token`
 - `hooks`：Collection 写了 `pre_request` 或 `post_request` 就覆盖对应的全局 hook，没写的继续用全局
 - `defaults` / `script_runners`：按 key 合并
@@ -311,13 +318,15 @@ global:
 
 ```text
 global.yaml 的 global.headers
-  < <collection>.yaml 的 global.headers
   < global.yaml 的 environments.<env>.headers
+  < <collection>.yaml 的 global.headers
   < <collection>.yaml 的 environments.<env>.headers
   < --header/-H
 ```
 
-可以用 `lion config show petrel` 查看合并后的最终配置。
+例如四层分别把 `x-tenant-id` 配成 `T000`、`T001`、`T002`、`T003`，`--env dev` 时最终发送 `T003`；再加 `-H x-tenant-id=T004`，最终发送 `T004`。
+
+可以用 `lion config show petrel` 查看合并后的配置；其中 `<collection>.yaml` 的 `global.headers` 会显示在每个环境的固定 Headers 中。
 
 #### 默认值规则详解
 

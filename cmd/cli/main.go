@@ -308,19 +308,7 @@ func newSendCmd() *cobra.Command {
 			}
 
 			// 解析 --header 参数
-			headerMap := make(map[string]string)
-			for _, h := range headers {
-				idx := strings.Index(h, "=")
-				if idx > 0 {
-					headerMap[h[:idx]] = h[idx+1:]
-				} else {
-					// 也支持冒号分隔
-					idx = strings.Index(h, ":")
-					if idx > 0 {
-						headerMap[h[:idx]] = h[idx+1:]
-					}
-				}
-			}
+			headerMap := parseHeaderFlags(headers)
 
 			// 创建发送器（传入 Collection 的 Consul 服务名称、headers、是否 verbose）
 			s, err := sender.NewSender(cfg, env, addr, coll.Service, plaintext, verbose, headerMap)
@@ -364,6 +352,27 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&copy, "copy", "c", false, "生成等效 curl/grpcurl 命令（不发送请求）")
 
 	return cmd
+}
+
+// parseHeaderFlags 解析 --header/-H 参数，支持 key=value 与 key: value 两种写法。
+// key/value 两端的空白会被去掉，空 key 直接忽略；优先级由 sender 统一处理。
+func parseHeaderFlags(values []string) map[string]string {
+	headers := make(map[string]string, len(values))
+	for _, h := range values {
+		idx := strings.Index(h, "=")
+		if idx < 0 {
+			idx = strings.Index(h, ":")
+		}
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(h[:idx])
+		if key == "" {
+			continue
+		}
+		headers[key] = strings.TrimSpace(h[idx+1:])
+	}
+	return headers
 }
 
 // isGRPC 判断接口是否为 gRPC
