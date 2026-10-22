@@ -142,13 +142,14 @@ lion send <api-id> --env dev --param "orderId=12345"
 
 ## 配置详解
 
-lion 的配置分为两层：**全局配置** (`global.yaml`) 和 **Collection Markdown**（接口定义）。
+lion 的配置分为三层：**全局配置** (`global.yaml`)、**Collection 配置** (`<collection>.yaml`，可选) 和 **Collection Markdown**（接口定义）。
 
 ### 配置目录结构
 
 ```
 ~/.lion/
 ├── global.yaml                          # 全局配置
+├── petrel.yaml                          # Collection 级配置（可选，覆盖 global.yaml）
 ├── api/                                 # Collection 接口定义
 │   ├── petstore/                        # Collection: petstore
 │   │   ├── pet.md                       # 分组: /pet（HTTP 一级路径）
@@ -175,6 +176,8 @@ global:
     python: "/usr/bin/python3"  #   Python 解释器路径
     node: "/usr/bin/node"       #   Node.js 解释器路径
     bash: "/bin/bash"           #   Bash 解释器路径
+  headers:                      # 全局固定请求头 / gRPC metadata（可选）
+    X-Client: lion
 
 # ─────────────────────────────────────────────
 # 2. 环境配置（可配置多个）
@@ -183,6 +186,8 @@ environments:
   dev:
     resolve: direct             # 寻址方式：direct / consul
     host: "127.0.0.1:8080"     # 直连地址（resolve: direct 时使用）
+    headers:                    # 环境级固定请求头 / gRPC metadata（可选）
+      x-tenant-id: "T001"
   staging:
     resolve: consul             # 通过 Consul 服务发现寻址
     consul_addr: "https://consul.staging.example.com"
@@ -219,15 +224,100 @@ hooks:
 | `global.timeout` | string | `30s` | 请求超时时间，支持 Go duration 格式（`30s`、`1m`、`500ms`） |
 | `global.output` | string | `pretty` | 默认输出格式：`pretty`（美化 JSON）/ `json`（原始 JSON）/ `raw`（原始响应） |
 | `global.script_runners` | map | 空 | 脚本解释器路径映射，key 为语言名，value 为解释器绝对路径 |
+| `global.headers` | map | 空 | 所有环境共享的固定请求头 / gRPC metadata |
 | `environments` | map | 空 | 环境配置表，key 为环境名 |
 | `environments.*.resolve` | string | 无（必填） | 寻址方式：`direct`（直连）或 `consul`（服务发现） |
 | `environments.*.host` | string | 空 | 直连地址，`resolve: direct` 时使用 |
 | `environments.*.consul_addr` | string | 空 | Consul 地址，`resolve: consul` 时使用 |
 | `environments.*.consul_token` | string | 空 | Consul ACL Token |
+| `environments.*.headers` | map | 空 | 当前环境固定请求头 / gRPC metadata，覆盖 `global.headers` |
 | `defaults.types` | map | 空 | 按类型名匹配的默认值，key 为类型名，value 为 JSON 字符串 |
 | `defaults.fields` | map | 空 | 按字段名匹配的默认值，key 为 `*.fieldName` 格式 pattern，value 为默认值 |
 | `hooks.pre_request` | string | 空 | 全局前置脚本路径 |
 | `hooks.post_request` | string | 空 | 全局后置脚本路径 |
+
+#### 固定 Header / gRPC Metadata
+
+需要每次请求都带上的固定 header（gRPC 即 metadata），可以写在 `global.yaml` 里，不用每次 `-H`，也不用写脚本：
+
+```yaml
+global:
+  headers:                  # 所有环境共享
+    X-Client: lion
+    x-tenant-id: "T001"
+
+environments:
+  dev:
+    headers:                # 仅 dev 环境，覆盖 global.headers 中的同名 key
+      authorization: "Bearer dev-token"
+  test:
+    headers:
+      authorization: "Bearer test-token"
+```
+
+优先级（低 → 高）：
+
+```text
+global.headers  <  environments.<env>.headers  <  --header/-H
+```
+
+示例：
+
+```bash
+# 使用 dev 环境时，最终会带上 X-Client、x-tenant-id、authorization
+lion send rbe.userc.quokka.User/List --env dev
+
+# 临时覆盖配置中的 x-tenant-id
+lion send rbe.userc.quokka.User/List --env dev -H "x-tenant-id=T002"
+```
+
+说明：
+
+- HTTP 接口会把这些值作为请求头发送；gRPC 接口会作为 metadata 发送，key 在发送时统一转成小写
+- `--header` 支持 `key=value` 或 `key: value`，可多次指定，优先级最高
+- 前置脚本收到的是合并后的 headers；如果脚本返回 `headers`，会**整体覆盖**当前 headers，所以脚本需要保留配置里的固定 header（`auto_auth.py` 这种读取原 headers 再追加的方式不会丢）
+- header 名按大小写不敏感处理，`X-Tenant-Id` 和 `x-tenant-id` 会视为同一个 key
+
+#### Collection 级配置（`<collection>.yaml`）
+
+除了全局 `global.yaml`，每个 Collection 还可以有自己的一份配置：
+
+```text
+~/.lion/petrel.yaml      # 对应 ~/.lion/api/petrel/ 这个 Collection
+~/.lion/quokka.yaml
+```
+
+文件结构与 `global.yaml` 完全一致，**只需要写要覆盖的字段**，不用把整份配置复制一遍。合并规则是 Collection 配置覆盖全局配置，未写的字段继续继承 `global.yaml`。例如：
+
+```yaml
+# ~/.lion/petrel.yaml
+global:
+  headers:
+    service: "bsi.rbe.entity.petrel"
+    bsi-instance: "RBE_AA"
+    debugkey: "aK8#pW7zN1qR5eL"
+```
+
+这样只有 `petrel` 集合的请求会带这三个 metadata，其他集合不受影响。
+
+合并细节：
+
+- `global.headers` / `environments.*.headers`：按 key 合并，Collection 覆盖全局
+- `environments.*`：按环境名深合并；Collection 只写 `headers` 时，仍继承全局的 `host` / `consul_addr` / `consul_token`
+- `hooks`：Collection 写了 `pre_request` 或 `post_request` 就覆盖对应的全局 hook，没写的继续用全局
+- `defaults` / `script_runners`：按 key 合并
+
+最终 header / metadata 优先级：
+
+```text
+global.yaml 的 global.headers
+  < <collection>.yaml 的 global.headers
+  < global.yaml 的 environments.<env>.headers
+  < <collection>.yaml 的 environments.<env>.headers
+  < --header/-H
+```
+
+可以用 `lion config show petrel` 查看合并后的最终配置。
 
 #### 默认值规则详解
 
@@ -584,6 +674,71 @@ fi
 
 > 脚本错误不会中断请求流程，仅作为警告提示。
 
+### 使用 `--verbose` 排查脚本
+
+`--verbose` 除了打印请求报文，还会输出每个前置 / 后置脚本的执行详情：脚本实际返回了哪些字段、headers（gRPC 为 metadata）/ params / body 的前后变化，以及脚本执行完真正发出的请求。配合脚本报错信息，可以快速判断是脚本没返回字段、字段被覆盖，还是请求头被误删。
+
+```bash
+lion send createOrder --env dev --verbose
+```
+
+输出示例（节选）：
+
+```
+── 请求（脚本执行前） ──────────────────────────
+POST http://127.0.0.1:8080/api/order/create
+Headers（2）:
+  Content-Type: application/json
+  X-CLI: cli
+Body:
+{
+  "amount": 0
+}
+──────────────────────────────────
+
+── 前置脚本（pre_request，2 个脚本，共 96ms） ──────────────
+   接口: createOrder
+  1. ✅ ~/.lion/scripts/sign.py（48ms）
+     📤 返回字段: headers, params, body, output
+     📝 已注入签名
+     🔧 Headers（2 处变化）:
+          + X-Sign = "sig-123"
+          ~ Authorization: "Bearer old" → "Bearer new"
+     🔧 Params（1 处变化）:
+          + traceId = "trace-1"
+     🔧 Body（1 处变化）:
+          ~ amount: 0 → 42
+  2. ✅ ~/.lion/scripts/token.py（47ms）
+     📤 返回字段: headers
+     🔧 Headers（1 处变化）:
+          - X-Sign（原值 "sig-123"）
+──────────────────────────────────────────────
+
+── 最终请求（脚本执行后） ──────────────────────────
+POST http://127.0.0.1:8080/api/order/create?traceId=trace-1
+Headers（3）:
+  Authorization: Bearer new
+  Content-Type: application/json
+  X-CLI: cli
+Body:
+{
+  "amount": 42
+}
+──────────────────────────────────
+```
+
+说明：
+
+- `+` 表示新增、`~` 表示修改、`-` 表示删除（括号内为删除前的值）
+- `接口` 是传给脚本的 `api_id`，便于核对脚本里的接口前缀 / 集合判断条件
+- `返回字段` 是脚本 stdout 中实际出现的字段；如果这里没有 `headers` / `params` / `body`，说明脚本没有返回对应修改
+- `🪵 stderr` 会展示脚本写到 stderr 的诊断日志，**即使脚本正常退出也会显示**；如果脚本「返回了 headers 但没有任何变化」，优先看这里是否有登录失败、跳过鉴权、找不到配置等日志
+- 前置脚本返回 `headers` / `params` / `body` 时，会**整体覆盖**对应字段，未返回的字段保持不变；要删除某个 header，就在返回的 `headers` 中不再包含它
+- `最终请求` 是脚本执行后真正发送的报文，包含 Query 参数、最终 headers 和 body；gRPC 接口对应显示为 `Metadata`（key 会被统一转成小写）
+- 没有前置脚本时只打印一个 `请求` 块，不会重复输出
+- 脚本执行失败时，`--verbose` 会显示失败脚本的 stderr 以及「后续脚本已中止」，同时仍打印最终请求，便于确认实际发出了什么
+- 后置脚本会显示返回字段、`output`、断言结果和 `extracted`；后置脚本返回的 `headers` / `params` / `body` 只会在「返回字段」中列出，不会修改已发送的请求
+
 ---
 
 ## 请求生命周期
@@ -772,16 +927,18 @@ lion send <api-id> [flags]
 | `<api-id>` | 是 | 接口 ID（Markdown 中反引号内的标识符） |
 | `--env` | 否 | 目标环境名（不指定则使用配置中的第一个环境） |
 | `--addr` | 直连地址 | 直连地址，覆盖环境配置中的 `host` |
+| `--header` / `-H` | 否 | 自定义请求头 / gRPC metadata，格式 `key=value`，覆盖配置中的固定值（可多次使用） |
 | `--param` | 否 | 覆盖参数，格式 `key=value`（可多次使用） |
 | `--plaintext` | 否 | 完整请求体 JSON（字符串），**整体覆盖**接口定义中的请求体 |
 | `--output` | 否 | 输出格式：`pretty` / `json` / `raw`（覆盖全局配置） |
-| `--verbose` | 否 | 显示完整请求/响应报文 |
+| `--verbose` | 否 | 显示完整请求/响应报文，以及脚本返回字段、headers/metadata、params、body 的前后变化和最终请求 |
 
 **示例：**
 
 ```bash
 lion send createOrder --env dev
 lion send createOrder --addr "127.0.0.1:8080" --param "orderId=12345"
+lion send createOrder --env dev -H "x-tenant-id=T001"
 lion send getOrder --env dev --output json
 lion send getUser --env staging --param "userId=100" --param "fields=name,email"
 ```

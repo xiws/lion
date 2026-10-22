@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"lion/internal/model"
 
@@ -60,6 +61,173 @@ func LoadGlobalConfig() (*model.GlobalConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// CollectionConfigPath 返回 Collection 级配置文件路径：~/.lion/<collection>.yaml
+func CollectionConfigPath(collectionName string) (string, error) {
+	dir, err := LionDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, collectionName+".yaml"), nil
+}
+
+// ApplyCollectionConfig 加载 <collection>.yaml 并合并到全局配置。
+// Collection 级配置覆盖 global.yaml 中的同名配置，未定义的字段继续继承全局配置。
+func ApplyCollectionConfig(base *model.GlobalConfig, collectionName string) (*model.GlobalConfig, error) {
+	if base == nil {
+		base = defaultGlobalConfig()
+	}
+	if collectionName == "" || collectionName == "global" {
+		return base, nil
+	}
+
+	path, err := CollectionConfigPath(collectionName)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return base, nil
+		}
+		return nil, fmt.Errorf("读取 Collection 配置 %s 失败: %w", path, err)
+	}
+
+	var overlay model.GlobalConfig
+	if err := yaml.Unmarshal(data, &overlay); err != nil {
+		return nil, fmt.Errorf("解析 Collection 配置 %s 失败: %w", path, err)
+	}
+
+	return mergeGlobalConfig(base, &overlay), nil
+}
+
+// mergeGlobalConfig 将 overlay 合并到 base，返回新配置，不修改 base。
+func mergeGlobalConfig(base, overlay *model.GlobalConfig) *model.GlobalConfig {
+	out := *base
+
+	if overlay.Global.Timeout != "" {
+		out.Global.Timeout = overlay.Global.Timeout
+	}
+	if overlay.Global.Output != "" {
+		out.Global.Output = overlay.Global.Output
+	}
+	out.Global.ScriptRunners = mergeStringMap(base.Global.ScriptRunners, overlay.Global.ScriptRunners)
+	out.Global.Headers = mergeHeaderMap(base.Global.Headers, overlay.Global.Headers)
+
+	// Environment 按环境名深合并：Collection 只写 headers 时仍保留全局的 host/consul 配置
+	out.Environments = cloneEnvironments(base.Environments)
+	for name, overEnv := range overlay.Environments {
+		if overEnv == nil {
+			continue
+		}
+		env := out.Environments[name]
+		if env == nil {
+			env = &model.Environment{}
+			out.Environments[name] = env
+		}
+		if overEnv.Resolve != "" {
+			env.Resolve = overEnv.Resolve
+		}
+		if overEnv.Host != "" {
+			env.Host = overEnv.Host
+		}
+		if overEnv.ConsulAddr != "" {
+			env.ConsulAddr = overEnv.ConsulAddr
+		}
+		if overEnv.ConsulToken != "" {
+			env.ConsulToken = overEnv.ConsulToken
+		}
+		env.Headers = mergeHeaderMap(env.Headers, overEnv.Headers)
+	}
+
+	if overlay.Defaults != nil {
+		defaults := &model.DefaultRule{}
+		if base.Defaults != nil {
+			defaults.Types = copyStringMap(base.Defaults.Types)
+			defaults.Fields = copyStringMap(base.Defaults.Fields)
+		}
+		defaults.Types = mergeStringMap(defaults.Types, overlay.Defaults.Types)
+		defaults.Fields = mergeStringMap(defaults.Fields, overlay.Defaults.Fields)
+		out.Defaults = defaults
+	}
+
+	if overlay.Hooks != nil {
+		hooks := &model.Hooks{}
+		if base.Hooks != nil {
+			hooks.PreRequest = append(model.StringSlice{}, base.Hooks.PreRequest...)
+			hooks.PostRequest = append(model.StringSlice{}, base.Hooks.PostRequest...)
+		}
+		if overlay.Hooks.PreRequest != nil {
+			hooks.PreRequest = overlay.Hooks.PreRequest
+		}
+		if overlay.Hooks.PostRequest != nil {
+			hooks.PostRequest = overlay.Hooks.PostRequest
+		}
+		out.Hooks = hooks
+	}
+
+	return &out
+}
+
+func cloneEnvironments(src map[string]*model.Environment) map[string]*model.Environment {
+	dst := make(map[string]*model.Environment, len(src))
+	for name, env := range src {
+		if env == nil {
+			dst[name] = nil
+			continue
+		}
+		copied := *env
+		copied.Headers = copyStringMap(env.Headers)
+		dst[name] = &copied
+	}
+	return dst
+}
+
+func copyStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func mergeStringMap(base, overlay map[string]string) map[string]string {
+	if len(overlay) == 0 {
+		return base
+	}
+	dst := copyStringMap(base)
+	if dst == nil {
+		dst = make(map[string]string, len(overlay))
+	}
+	for k, v := range overlay {
+		dst[k] = v
+	}
+	return dst
+}
+
+// mergeHeaderMap 合并 header / metadata，按大小写不敏感覆盖，避免同名 key 重复
+func mergeHeaderMap(base, overlay map[string]string) map[string]string {
+	if len(overlay) == 0 {
+		return base
+	}
+	dst := copyStringMap(base)
+	if dst == nil {
+		dst = make(map[string]string, len(overlay))
+	}
+	for k, v := range overlay {
+		for existing := range dst {
+			if existing != k && strings.EqualFold(existing, k) {
+				delete(dst, existing)
+			}
+		}
+		dst[k] = v
+	}
+	return dst
 }
 
 // SaveGlobalConfig 保存全局配置

@@ -41,6 +41,15 @@ func NewSender(cfg *model.GlobalConfig, envName, addr, service, plaintext string
 		runners = cfg.Global.ScriptRunners
 	}
 
+	// 固定请求头 / gRPC metadata 的优先级：
+	// global.headers < environments.<env>.headers < --header
+	headers := make(map[string]string)
+	mergeHeaders(headers, cfg.Global.Headers)
+	if env != nil {
+		mergeHeaders(headers, env.Headers)
+	}
+	mergeHeaders(headers, extraHeaders)
+
 	return &Sender{
 		cfg:       cfg,
 		env:       env,
@@ -50,8 +59,23 @@ func NewSender(cfg *model.GlobalConfig, envName, addr, service, plaintext string
 		service:   service,
 		plaintext: plaintext,
 		verbose:   verbose,
-		headers:   extraHeaders,
+		headers:   headers,
 	}, nil
+}
+
+// mergeHeaders 将 src 合并进 dst，并按 HTTP header 规则做大小写归一化，
+// 避免 X-Tenant-Id 与 x-tenant-id 被当成两个不同的 key。
+func mergeHeaders(dst, src map[string]string) {
+	for k, v := range src {
+		if k == "" {
+			continue
+		}
+		key := http.CanonicalHeaderKey(k)
+		if key == "" {
+			key = k
+		}
+		dst[key] = v
+	}
 }
 
 // SendHTTP 发送 HTTP 请求
@@ -94,18 +118,10 @@ func (s *Sender) SendHTTP(api *model.API, group *model.Group, overrides map[stri
 		}
 	}
 
-	if s.verbose {
-		fmt.Printf("── 请求 ──────────────────────────\n")
-		fmt.Printf("%s %s\n", api.Method, baseURL)
-		fmt.Printf("Headers:\n")
-		for k, v := range headers {
-			fmt.Printf("  %s: %s\n", k, v)
-		}
-		if body != nil {
-			data, _ := json.MarshalIndent(body, "", "  ")
-			fmt.Printf("Body:\n%s\n", string(data))
-		}
-		fmt.Printf("──────────────────────────────────\n\n")
+	// 解析本次使用的前置脚本，便于 --verbose 时先展示脚本执行前的请求
+	preScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, true)
+	if s.verbose && len(preScripts) > 0 {
+		printHTTPRequest("请求（脚本执行前）", api.Method, baseURL, headers, body)
 	}
 
 	// 构造脚本上下文
@@ -118,13 +134,13 @@ func (s *Sender) SendHTTP(api *model.API, group *model.Group, overrides map[stri
 	}
 
 	// 执行前置脚本（支持多脚本链式执行）
-	preScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, true)
 	if len(preScripts) > 0 {
-		result, err := s.engine.ExecutePreChain(preScripts, "pre_request", ctx)
-		if err != nil {
+		steps, dur := s.engine.ExecutePreChain(preScripts, "pre_request", ctx)
+		if s.verbose {
+			printPreScriptSteps(steps, dur, "Headers", api.ID)
+		}
+		if err := preChainError(steps); err != nil && !s.verbose {
 			fmt.Printf("⚠️  前置脚本警告: %v\n", err)
-		} else if result != nil {
-			_ = result // 已通过 ExecutePreChain 应用到 ctx
 		}
 	}
 
@@ -151,6 +167,14 @@ func (s *Sender) SendHTTP(api *model.API, group *model.Group, overrides map[stri
 			q.Set(k, v)
 		}
 		req.URL.RawQuery = q.Encode()
+	}
+
+	if s.verbose {
+		title := "请求"
+		if len(preScripts) > 0 {
+			title = "最终请求（脚本执行后）"
+		}
+		printHTTPFinalRequest(title, req, ctx.Body)
 	}
 
 	// 发送请求
@@ -192,13 +216,16 @@ func (s *Sender) SendHTTP(api *model.API, group *model.Group, overrides map[stri
 	// 执行后置脚本（支持多脚本链式执行）
 	postScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, false)
 	if len(postScripts) > 0 {
-		results, err := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
-		if err != nil {
-			fmt.Printf("⚠️  后置脚本警告: %v\n", err)
+		steps, results := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
+		if s.verbose {
+			printPostScriptSteps(steps, api.ID)
 		} else {
 			for _, result := range results {
 				printPostResult(result)
 			}
+		}
+		if err := postChainError(steps); err != nil && !s.verbose {
+			fmt.Printf("⚠️  后置脚本警告: %v\n", err)
 		}
 	}
 

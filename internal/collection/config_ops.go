@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"lion/internal/config"
@@ -23,6 +24,7 @@ type ShowResult struct {
 	// 全局配置信息
 	GlobalTimeout string
 	GlobalOutput  string
+	GlobalHeaders map[string]string
 	Environments  map[string]*EnvInfo
 	Defaults      *DefaultInfo
 	Hooks         *HooksInfo
@@ -35,6 +37,7 @@ type EnvInfo struct {
 	Host        string
 	ConsulAddr  string
 	ConsulToken string
+	Headers     map[string]string
 }
 
 // DefaultInfo 默认值规则
@@ -79,11 +82,15 @@ func Show(name string) (*ShowResult, error) {
 		result.TotalAPIs += len(g.APIs)
 	}
 
-	// 加载全局配置
+	// 加载全局配置，并合并 Collection 级配置（~/.lion/<collection>.yaml）
 	cfg, err := config.LoadGlobalConfig()
+	if err == nil {
+		cfg, err = config.ApplyCollectionConfig(cfg, name)
+	}
 	if err == nil {
 		result.GlobalTimeout = cfg.Global.Timeout
 		result.GlobalOutput = cfg.Global.Output
+		result.GlobalHeaders = cfg.Global.Headers
 
 		if len(cfg.Environments) > 0 {
 			result.Environments = make(map[string]*EnvInfo)
@@ -93,6 +100,7 @@ func Show(name string) (*ShowResult, error) {
 					Host:        env.Host,
 					ConsulAddr:  env.ConsulAddr,
 					ConsulToken: env.ConsulToken,
+					Headers:     env.Headers,
 				}
 			}
 		}
@@ -243,8 +251,11 @@ func Check(name string) (*CheckResult, error) {
 		}
 	}
 
-	// 4. 检查全局配置中的环境
+	// 4. 检查全局配置中的环境（含 Collection 级覆盖）
 	cfg, err := config.LoadGlobalConfig()
+	if err == nil {
+		cfg, err = config.ApplyCollectionConfig(cfg, name)
+	}
 	if err != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("全局配置加载失败: %v", err))
 	} else if len(cfg.Environments) == 0 {
@@ -296,6 +307,16 @@ func expandPath(path string) string {
 	return filepath.Join(home, path[1:])
 }
 
+// sortedHeaderKeys 返回排序后的 header key，保证 config show 输出稳定
+func sortedHeaderKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // FormatShowResult 格式化 Show 输出
 func FormatShowResult(r *ShowResult) string {
 	var sb strings.Builder
@@ -329,6 +350,12 @@ func FormatShowResult(r *ShowResult) string {
 	if r.GlobalOutput != "" {
 		sb.WriteString(fmt.Sprintf("  输出格式: %s\n", r.GlobalOutput))
 	}
+	if len(r.GlobalHeaders) > 0 {
+		sb.WriteString("  固定 Headers:\n")
+		for _, k := range sortedHeaderKeys(r.GlobalHeaders) {
+			sb.WriteString(fmt.Sprintf("    %s: %s\n", k, r.GlobalHeaders[k]))
+		}
+	}
 
 	// 环境信息
 	if len(r.Environments) > 0 {
@@ -344,6 +371,12 @@ func FormatShowResult(r *ShowResult) string {
 			}
 			if env.ConsulToken != "" {
 				sb.WriteString(fmt.Sprintf("     Token:   %s\n", env.ConsulToken))
+			}
+			if len(env.Headers) > 0 {
+				sb.WriteString("     固定 Headers:\n")
+				for _, k := range sortedHeaderKeys(env.Headers) {
+					sb.WriteString(fmt.Sprintf("       %s: %s\n", k, env.Headers[k]))
+				}
 			}
 		}
 	} else {

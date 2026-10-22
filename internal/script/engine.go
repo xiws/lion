@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"lion/internal/model"
 )
@@ -29,45 +30,127 @@ func NewEngineWithRunners(runners map[string]string) *Engine {
 
 // ExecutePreScript 执行前置脚本
 func (e *Engine) ExecutePreScript(scriptPath, action string, ctx *model.ScriptContext) (*model.ScriptResult, error) {
-	return e.execute(scriptPath, action, ctx)
+	result, _, err := e.execute(scriptPath, action, ctx)
+	return result, err
 }
 
 // ExecutePostScript 执行后置脚本
 func (e *Engine) ExecutePostScript(scriptPath, action string, ctx *model.ScriptContext) (*model.ScriptResult, error) {
-	return e.execute(scriptPath, action, ctx)
+	result, _, err := e.execute(scriptPath, action, ctx)
+	return result, err
 }
 
-// ExecutePreChain 链式执行多个前置脚本，每个脚本的输出作为下一个的输入
-func (e *Engine) ExecutePreChain(scripts []string, action string, ctx *model.ScriptContext) (*model.ScriptResult, error) {
-	var lastResult *model.ScriptResult
+// ContextSnapshot 脚本执行前后的请求上下文快照
+type ContextSnapshot struct {
+	Headers map[string]string
+	Params  map[string]string
+	Body    interface{}
+}
+
+// PreScriptStep 前置脚本链式执行中的一个步骤
+type PreScriptStep struct {
+	Script    string           // 脚本文件路径
+	Error     error            // 脚本执行错误（nil 表示成功）
+	Stderr    string           // 脚本 stderr（即使退出码为 0，也可能有诊断日志）
+	Before    *ContextSnapshot // 执行前的上下文
+	After     *ContextSnapshot // 应用脚本返回值之后的上下文
+	Result    *model.ScriptResult
+	ElapsedMs int64 // 本脚本耗时（毫秒）
+}
+
+// PostScriptStep 后置脚本链式执行中的一个步骤
+type PostScriptStep struct {
+	Script    string // 脚本文件路径
+	Error     error  // 脚本执行错误（nil 表示成功）
+	Stderr    string // 脚本 stderr（即使退出码为 0，也可能有诊断日志）
+	Result    *model.ScriptResult
+	ElapsedMs int64 // 本脚本耗时（毫秒）
+}
+
+// ExecutePreChain 链式执行多个前置脚本，并记录每一步执行前后的上下文。
+// 脚本出错时中止后续脚本，已执行步骤仍会返回，便于 --verbose 定位问题。
+func (e *Engine) ExecutePreChain(scripts []string, action string, ctx *model.ScriptContext) ([]PreScriptStep, int64) {
+	steps := make([]PreScriptStep, 0, len(scripts))
+	start := time.Now()
 	for _, sp := range scripts {
-		result, err := e.execute(sp, action, ctx)
-		if err != nil {
-			return nil, fmt.Errorf("脚本 %s: %w", sp, err)
+		step := PreScriptStep{
+			Script: sp,
+			Before: snapshotContext(ctx),
 		}
+
+		stepStart := time.Now()
+		result, stderrText, err := e.execute(sp, action, ctx)
+		step.ElapsedMs = time.Since(stepStart).Milliseconds()
+		step.Stderr = stderrText
+
+		if err != nil {
+			step.Error = fmt.Errorf("脚本 %s: %w", sp, err)
+			step.After = snapshotContext(ctx)
+			steps = append(steps, step)
+			break
+		}
+
 		applyPreResult(ctx, result)
-		lastResult = result
+		step.Result = result
+		step.After = snapshotContext(ctx)
+		steps = append(steps, step)
 	}
-	return lastResult, nil
+	return steps, time.Since(start).Milliseconds()
 }
 
-// ExecutePostChain 链式执行多个后置脚本，每个脚本的输出作为下一个的输入
-func (e *Engine) ExecutePostChain(scripts []string, action string, ctx *model.ScriptContext) ([]*model.ScriptResult, error) {
-	var results []*model.ScriptResult
+// ExecutePostChain 链式执行多个后置脚本，并记录每一步的结果。
+// 脚本出错时中止后续脚本，已执行步骤仍会返回，便于 --verbose 定位问题。
+func (e *Engine) ExecutePostChain(scripts []string, action string, ctx *model.ScriptContext) ([]PostScriptStep, []*model.ScriptResult) {
+	steps := make([]PostScriptStep, 0, len(scripts))
+	results := make([]*model.ScriptResult, 0, len(scripts))
 	for _, sp := range scripts {
-		result, err := e.execute(sp, action, ctx)
+		step := PostScriptStep{Script: sp}
+
+		stepStart := time.Now()
+		result, stderrText, err := e.execute(sp, action, ctx)
+		step.ElapsedMs = time.Since(stepStart).Milliseconds()
+		step.Stderr = stderrText
+
 		if err != nil {
-			return nil, fmt.Errorf("脚本 %s: %w", sp, err)
+			step.Error = fmt.Errorf("脚本 %s: %w", sp, err)
+			steps = append(steps, step)
+			break
 		}
+
+		step.Result = result
+		steps = append(steps, step)
+		results = append(results, result)
+
 		// 将后置结果中的 extracted 数据反馈到下一个脚本的上下文
 		if result.Extracted != nil {
 			if ctx.Body == nil {
 				ctx.Body = make(map[string]interface{})
 			}
 		}
-		results = append(results, result)
 	}
-	return results, nil
+	return steps, results
+}
+
+// snapshotContext 复制当前上下文，供前后对比使用。
+// Body 在链式执行中只会被整体替换、不会被原地修改，因此可共享引用。
+func snapshotContext(ctx *model.ScriptContext) *ContextSnapshot {
+	return &ContextSnapshot{
+		Headers: copyMap(ctx.Headers),
+		Params:  copyMap(ctx.Params),
+		Body:    ctx.Body,
+	}
+}
+
+// copyMap 复制 map[string]string
+func copyMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	nm := make(map[string]string, len(m))
+	for k, v := range m {
+		nm[k] = v
+	}
+	return nm
 }
 
 // CheckScriptExists 检查脚本是否存在
@@ -79,20 +162,20 @@ func CheckScriptExists(scriptPath string) error {
 	return nil
 }
 
-// execute 执行脚本
-func (e *Engine) execute(scriptPath, action string, ctx *model.ScriptContext) (*model.ScriptResult, error) {
+// execute 执行脚本，返回脚本结果、stderr 内容和执行错误
+func (e *Engine) execute(scriptPath, action string, ctx *model.ScriptContext) (*model.ScriptResult, string, error) {
 	// 展开路径中的 ~
 	expandedPath := expandPath(scriptPath)
 
 	// 检查脚本是否存在
 	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("脚本文件不存在: %s", scriptPath)
+		return nil, "", fmt.Errorf("脚本文件不存在: %s", scriptPath)
 	}
 
 	// 序列化上下文为 JSON
 	input, err := json.Marshal(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("序列化脚本上下文失败: %w", err)
+		return nil, "", fmt.Errorf("序列化脚本上下文失败: %w", err)
 	}
 
 	// 构造命令
@@ -105,16 +188,16 @@ func (e *Engine) execute(scriptPath, action string, ctx *model.ScriptContext) (*
 
 	// 执行脚本
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("执行脚本失败: %w\nstderr: %s", err, stderr.String())
+		return nil, stderr.String(), fmt.Errorf("执行脚本失败: %w\nstderr: %s", err, stderr.String())
 	}
 
 	// 解析输出
 	var result model.ScriptResult
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return nil, fmt.Errorf("解析脚本输出失败: %w\noutput: %s", err, stdout.String())
+		return nil, stderr.String(), fmt.Errorf("解析脚本输出失败: %w\noutput: %s", err, stdout.String())
 	}
 
-	return &result, nil
+	return &result, stderr.String(), nil
 }
 
 // buildCommand 根据脚本文件扩展名构造执行命令

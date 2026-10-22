@@ -281,15 +281,21 @@ func newSendCmd() *cobra.Command {
 				return fmt.Errorf("加载配置失败: %w", err)
 			}
 
-			// 覆盖输出格式
-			if output != "" {
-				cfg.Global.Output = output
-			}
-
 			// 查找接口（同时获取 Group，用于分组级 hooks）
 			coll, group, api, err := collection.GetAPI(apiID)
 			if err != nil {
 				return err
+			}
+
+			// 合并 Collection 级配置（~/.lion/<collection>.yaml），覆盖 global.yaml
+			cfg, err = config.ApplyCollectionConfig(cfg, coll.Name)
+			if err != nil {
+				return fmt.Errorf("加载 Collection %q 配置失败: %w", coll.Name, err)
+			}
+
+			// 覆盖输出格式
+			if output != "" {
+				cfg.Global.Output = output
 			}
 
 			// 解析 --param 参数
@@ -351,9 +357,9 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&env, "env", "e", "", "目标环境")
 	cmd.Flags().StringVarP(&addr, "addr", "a", "", "直连地址（覆盖配置中的 host）")
 	cmd.Flags().StringArrayVar(&params, "param", nil, "覆盖参数 (key=value)")
-	cmd.Flags().StringArrayVarP(&headers, "header", "H", nil, "自定义请求头 (key=value 或 key: value，可多次指定)")
+	cmd.Flags().StringArrayVarP(&headers, "header", "H", nil, "自定义请求头 / gRPC metadata（覆盖配置中的固定值，可多次指定）")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "输出格式: pretty / json / raw")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "显示完整请求信息")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "显示完整请求信息与脚本执行详情")
 	cmd.Flags().StringVarP(&plaintext, "plaintext", "P", "", "完整请求体 JSON（覆盖接口定义的请求体）")
 	cmd.Flags().BoolVarP(&copy, "copy", "c", false, "生成等效 curl/grpcurl 命令（不发送请求）")
 

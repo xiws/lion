@@ -156,11 +156,12 @@ lion send <api-id> --env local
 
 ## 配置
 
-配置分为两层，存放在 `~/.lion/` 目录下：
+配置分为三层，存放在 `~/.lion/` 目录下：
 
 | 文件 | 作用域 | 说明 |
 |------|--------|------|
-| `global.yaml` | 全局 | 环境、脚本路径、全局默认值规则、全局 hooks |
+| `global.yaml` | 全局 | 环境、脚本路径、全局默认值规则、全局 hooks、固定 headers |
+| `<collection>.yaml` | Collection 级 | 可选，结构与 global.yaml 一致，覆盖全局配置 |
 | `api/${collection}/${group}.md` | 分组级 | 每组一个文件，包含完整请求结构 + 接口级脚本，generate 时自动创建 |
 
 ### global.yaml — 全局配置
@@ -170,6 +171,8 @@ lion send <api-id> --env local
 global:
   timeout: 30s            # 默认请求超时
   output: pretty          # 输出格式：pretty / json / raw
+  headers:                # 全局固定请求头 / gRPC metadata（可选）
+    X-Client: lion
 
 # 环境配置（可配置多个）
 environments:
@@ -177,6 +180,8 @@ environments:
     consul_addr: "https://consul.dev.shijizhongyun.com/"
     consul_token: "3f84201a-31a2-c843-bbc0-0a45983aa7b7"
     resolve: consul       # 寻址方式：consul / direct
+    headers:              # 环境级固定请求头 / gRPC metadata（覆盖 global.headers）
+      x-tenant-id: "T001"
   local:
     resolve: direct       # 直连模式
     host: "127.0.0.1:8080"  # 直连地址，--addr 未传时默认使用此值
@@ -195,6 +200,21 @@ hooks:
   post_request: "~/.lion/scripts/post_check.py"  # 请求后执行
 ```
 
+### <collection>.yaml — Collection 级配置（可选）
+
+例如 `~/.lion/petrel.yaml` 只对 `petrel` 集合生效，结构与 `global.yaml` 相同，只需要写要覆盖的字段：
+
+```yaml
+# ~/.lion/petrel.yaml
+global:
+  headers:
+    service: "bsi.rbe.entity.petrel"
+    bsi-instance: "RBE_AA"
+    debugkey: "***"
+```
+
+合并规则：Collection 配置覆盖 `global.yaml`，未写的字段继续继承全局配置；`environments` 按环境名深合并，`headers` / `hooks` / `defaults` 按 key 合并。`lion config show <collection>` 展示的是合并后的最终配置。
+
 ### api/${collection}/${group}.md — 分组 Markdown
 
 由 `generate` 自动创建，每个分组一个文件。包含该组所有接口的完整请求参数结构和接口级脚本配置。详见下方「Collection Markdown 规范」章节。
@@ -206,6 +226,7 @@ hooks:
 3. 请求结构：从 `api/${collection}/${group}.md` 中对应接口的 JSON 代码块读取（用户可编辑）
 4. 脚本优先级：接口级 `> script:` > 全局 `hooks`（接口级覆盖全局）
 5. 若命令行传入 `--addr`，覆盖环境配置中的 `host`
+6. 固定 header / gRPC metadata 优先级：`global.yaml` < `<collection>.yaml`；同一份文件内 `environments.<env>.headers` 覆盖 `global.headers`；`--header/-H` 最高
 
 ---
 
@@ -223,7 +244,7 @@ hooks:
    - `direct` 模式：直连模式。优先使用命令行 `--addr` 参数；未传时，使用配置文件中 `host` 字段的值。
 4. **前置 / 后置脚本**：分全局和接口级两层。全局脚本在 `global.yaml` 的 `hooks` 中配置；接口级脚本在 Markdown 中通过 `> script:` 配置，优先级高于全局。脚本通过 stdin/stdout 传递数据，详见「脚本对接协议」章节。
 5. **请求体格式**：请求体以 JSON 代码块形式存储在分组 Markdown 中，展示完整请求参数结构，用户直接编辑即可。发送时遵循最小添加数据原则，仅发送有值的字段。
-6. **输出与日志**：请求结果默认以 Pretty Print 格式输出，支持 `--output json` 输出原始 JSON，支持 `--verbose` 查看完整请求/响应报文。
+6. **输出与日志**：请求结果默认以 Pretty Print 格式输出，支持 `--output json` 输出原始 JSON，支持 `--verbose` 查看完整请求/响应报文以及脚本执行详情（返回字段、headers/metadata、params、body 的前后变化与最终请求）。
 
 ---
 
@@ -498,6 +519,8 @@ lion 构造 ScriptContext
     ├─ 前置脚本：用 ScriptResult 中的 headers/params/body 覆盖原请求
     └─ 后置脚本：展示 assertions、保存 extracted 变量供后续使用
 ```
+
+使用 `--verbose` 时，lion 会额外输出每个脚本的返回字段、stderr 诊断日志、headers（gRPC 为 metadata）/ params / body 的前后变化（`+` 新增、`~` 修改、`-` 删除），以及脚本全部执行完后真正发送的请求，便于定位脚本未返回字段、字段被覆盖或请求头被误删等问题。脚本正常退出时写入 stderr 的日志也会展示，因此像“登录失败”“跳过鉴权”这类只写 stderr 的诊断信息不会再被吞掉。
 
 ---
 

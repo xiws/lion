@@ -63,15 +63,10 @@ func (s *Sender) SendGRPC(api *model.API, group *model.Group, overrides map[stri
 		}
 	}
 
-	if s.verbose {
-		fmt.Printf("── 请求 ──────────────────────────\n")
-		fmt.Printf("gRPC %s\n", api.Path)
-		fmt.Printf("Host: %s\n", host)
-		if body != nil {
-			data, _ := json.MarshalIndent(body, "", "  ")
-			fmt.Printf("Body:\n%s\n", string(data))
-		}
-		fmt.Printf("──────────────────────────────────\n\n")
+	// 解析本次使用的前置脚本，便于 --verbose 时先展示脚本执行前的请求
+	preScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, true)
+	if s.verbose && len(preScripts) > 0 {
+		printGRPCRequest("gRPC 请求（脚本执行前）", host, api.Path, s.headers, body)
 	}
 
 	// 构造脚本上下文，初始 header（CLI --header 传入的值）
@@ -88,19 +83,27 @@ func (s *Sender) SendGRPC(api *model.API, group *model.Group, overrides map[stri
 	}
 
 	// 执行前置脚本（支持多脚本链式执行）
-	preScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, true)
 	if len(preScripts) > 0 {
-		result, err := s.engine.ExecutePreChain(preScripts, "pre_request", reqCtx)
-		if err != nil {
+		steps, dur := s.engine.ExecutePreChain(preScripts, "pre_request", reqCtx)
+		if s.verbose {
+			printPreScriptSteps(steps, dur, "Metadata", api.ID)
+		}
+		if err := preChainError(steps); err != nil && !s.verbose {
 			fmt.Printf("⚠️  前置脚本警告: %v\n", err)
-		} else if result != nil {
-			_ = result // 已通过 ExecutePreChain 应用到 reqCtx
 		}
 	}
 
 	// 添加 metadata（从脚本上下文中获取 headers）
 	md := metadata.New(reqCtx.Headers)
 	ctx = metadata.NewOutgoingContext(ctx, md)
+
+	if s.verbose {
+		title := "gRPC 请求"
+		if len(preScripts) > 0 {
+			title = "最终 gRPC 请求（脚本执行后）"
+		}
+		printGRPCFinalRequest(title, host, api.Path, md, reqCtx.Body)
+	}
 
 	// 通过反射调用 gRPC 方法
 	start := time.Now()
@@ -126,13 +129,16 @@ func (s *Sender) SendGRPC(api *model.API, group *model.Group, overrides map[stri
 	// 执行后置脚本（支持多脚本链式执行）
 	postScripts := script.ResolveScripts(api, group.Hooks, s.cfg.Hooks, false)
 	if len(postScripts) > 0 {
-		results, err := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
-		if err != nil {
-			fmt.Printf("⚠️  后置脚本警告: %v\n", err)
+		steps, results := s.engine.ExecutePostChain(postScripts, "post_request", postCtx)
+		if s.verbose {
+			printPostScriptSteps(steps, api.ID)
 		} else {
 			for _, result := range results {
 				printPostResult(result)
 			}
+		}
+		if err := postChainError(steps); err != nil && !s.verbose {
+			fmt.Printf("⚠️  后置脚本警告: %v\n", err)
 		}
 	}
 

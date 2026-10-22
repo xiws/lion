@@ -73,14 +73,16 @@ type GlobalSettings struct {
 	Timeout       string            `json:"timeout"        yaml:"timeout"`                            // 默认请求超时
 	Output        string            `json:"output"         yaml:"output"`                             // 输出格式：pretty / json / raw
 	ScriptRunners map[string]string `json:"script_runners,omitempty" yaml:"script_runners,omitempty"` // 脚本执行器配置
+	Headers       map[string]string `json:"headers,omitempty"        yaml:"headers,omitempty"`        // 全局固定请求头 / gRPC metadata
 }
 
 // Environment 环境配置
 type Environment struct {
-	ConsulAddr  string `json:"consul_addr,omitempty"  yaml:"consul_addr,omitempty"`  // Consul 地址
-	ConsulToken string `json:"consul_token,omitempty" yaml:"consul_token,omitempty"` // Consul Token
-	Resolve     string `json:"resolve"                yaml:"resolve"`                // 寻址方式：consul / direct
-	Host        string `json:"host,omitempty"         yaml:"host,omitempty"`         // 直连地址
+	ConsulAddr  string            `json:"consul_addr,omitempty"  yaml:"consul_addr,omitempty"`  // Consul 地址
+	ConsulToken string            `json:"consul_token,omitempty" yaml:"consul_token,omitempty"` // Consul Token
+	Resolve     string            `json:"resolve"                yaml:"resolve"`                // 寻址方式：consul / direct
+	Host        string            `json:"host,omitempty"         yaml:"host,omitempty"`         // 直连地址
+	Headers     map[string]string `json:"headers,omitempty"      yaml:"headers,omitempty"`      // 环境级固定请求头 / gRPC metadata
 }
 
 // DefaultRule 默认值规则
